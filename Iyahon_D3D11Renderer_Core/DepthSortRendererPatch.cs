@@ -2,6 +2,7 @@ using HarmonyLib;
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using System.Numerics;
 using System.Reflection;
 using System.Runtime.CompilerServices;
@@ -12,8 +13,10 @@ using Vortice.Mathematics;
 using YukkuriMovieMaker.Commons;
 using YukkuriMovieMaker.Player;
 using YukkuriMovieMaker.Player.Video;
+using YukkuriMovieMaker.Plugin.Effects;
 using YukkuriMovieMaker.Project;
 using YukkuriMovieMaker.Project.Items;
+using Iyahon_D3D11Renderer_Core.D3DEffect;
 
 #nullable enable
 namespace Iyahon_D3D11Renderer_Core;
@@ -231,6 +234,56 @@ internal static class DepthSortRendererPatch
                 var esoList = _effectedSourceOutputsField!.GetValue(eisValue) as IList;
                 if (esoList == null || esoList.Count == 0) continue;
 
+                // ── D3Dエフェクトの検出 ──
+                string? d3dEffectId = null;
+                float depthScale = 1f;
+                float lightIntensity = 0.5f;
+
+                try
+                {
+                    var videoEffects = item.VideoEffects;
+                    if (videoEffects != null)
+                    {
+                        foreach (var ve in videoEffects)
+                        {
+                            if (ve is D3DEffectVideoEffect d3dVe && ve.IsEnabled)
+                            {
+                                var effectId = d3dVe.SelectedEffectId;
+                                if (!string.IsNullOrEmpty(effectId))
+                                {
+                                    d3dEffectId = effectId;
+
+                                    // アニメーション値の取得（現在フレーム位置での値）
+                                    // アイテムの長さと現在位置を取得
+                                    try
+                                    {
+                                        var fps = (int)(GetFps(scene) ?? 60.0);
+                                        var itemFrame = GetItemFrame(item, scene) ?? 0L;
+                                        var itemLength = GetItemLength(item) ?? 1L;
+                                        depthScale = d3dVe.EffectSelection switch
+                                        {
+                                            D3DEffectSelection.Cube => (float)d3dVe.CubeDepthScale.GetValue(itemFrame, itemLength, fps),
+                                            D3DEffectSelection.Sphere => (float)d3dVe.SphereDepthScale.GetValue(itemFrame, itemLength, fps),
+                                            _ => 1f,
+                                        };
+                                        lightIntensity = (float)d3dVe.LightIntensity.GetValue(itemFrame, itemLength, fps);
+                                    }
+                                    catch
+                                    {
+                                        depthScale = 1f;
+                                        lightIntensity = 0.5f;
+                                    }
+                                }
+                                break; // 最初のD3Dエフェクトのみ使用
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log($"D3Dエフェクト検出エラー: {ex.Message}");
+                }
+
                 foreach (object? eso in esoList)
                 {
                     if (eso == null) continue;
@@ -282,6 +335,11 @@ internal static class DepthSortRendererPatch
                         BoundsCenterX = cx,
                         BoundsCenterY = cy,
                         Opacity = (float)drawDesc.Opacity,
+                        Layer = item.Layer,
+                        D3DEffectId = d3dEffectId,
+                        OriginalItem = item,
+                        D3DEffectDepthScale = depthScale,
+                        D3DEffectLightIntensity = lightIntensity,
                     });
                 }
             }
@@ -443,6 +501,47 @@ internal static class DepthSortRendererPatch
         catch { return null; }
     }
 
+    /// <summary>シーンからFPSを取得</summary>
+    private static double? GetFps(object? scene)
+    {
+        if (scene == null) return null;
+        try
+        {
+            var tl = scene.GetType().GetProperty("Timeline", BindingFlags.Instance | BindingFlags.Public)?.GetValue(scene);
+            var vi = tl?.GetType().GetProperty("VideoInfo", BindingFlags.Instance | BindingFlags.Public)?.GetValue(tl);
+            return (double?)vi?.GetType().GetProperty("FPS", BindingFlags.Instance | BindingFlags.Public)?.GetValue(vi);
+        }
+        catch { return null; }
+    }
+
+    /// <summary>アイテムの現在フレーム位置を取得</summary>
+    private static long? GetItemFrame(IVideoItem item, object? scene)
+    {
+        try
+        {
+            // scene.CurrentFrame - item.Frame でアイテム内の相対フレーム位置を計算
+            var currentFrameProp = scene?.GetType().GetProperty("CurrentFrame",
+                BindingFlags.Instance | BindingFlags.Public);
+            var currentFrame = currentFrameProp?.GetValue(scene);
+            if (currentFrame == null) return 0;
+
+            long sceneFrame = Convert.ToInt64(currentFrame);
+            long itemStart = item.Frame;
+            return Math.Max(0, sceneFrame - itemStart);
+        }
+        catch { return null; }
+    }
+
+    /// <summary>アイテムの長さ（フレーム数）を取得</summary>
+    private static long? GetItemLength(IVideoItem item)
+    {
+        try
+        {
+            return item.Length;
+        }
+        catch { return null; }
+    }
+
     // ═══════════════════════════════════════════════════════════════
     // EffectedItemSource.Update() AA 無効化パッチ
     // ═══════════════════════════════════════════════════════════════
@@ -459,6 +558,10 @@ internal static class DepthSortRendererPatch
         {
             var item = _eisItemField!.GetValue(__instance) as IVideoItem;
             if (item == null || !IsEnabledForItem(item)) return;
+
+            // 標準モード時は D2D AA をそのまま使用（Aliased 強制しない）
+            if (D3D11RendererSettings.Default.TransparencyMode == TransparencyMode.Standard)
+                return;
 
             // ── EffectedItemSource 自身の DC ──
             var devices = _eisDevicesField!.GetValue(__instance) as IGraphicsDevicesAndContext;

@@ -62,7 +62,12 @@ internal static class D2DD3DBridge
             dc.Target = bitmap;
             dc.BeginDraw();
             dc.Clear(new Color4(0f, 0f, 0f, 0f));
-            dc.DrawImage(image, new Vector2(offsetX, offsetY), null, InterpolationMode.NearestNeighbor, CompositeMode.SourceOver);
+            // 標準モード: D2D AA 有効なので Linear で滑らかに
+            // OIT モード: D2D AA 無効 (Aliased) なので NearestNeighbor で点サンプリング
+            var interpMode = D3D11RendererSettings.Default.TransparencyMode == TransparencyMode.Standard
+                ? InterpolationMode.Linear
+                : InterpolationMode.NearestNeighbor;
+            dc.DrawImage(image, new Vector2(offsetX, offsetY), null, interpMode, CompositeMode.SourceOver);
 
             ulong tag1, tag2;
             dc.Flush(out tag1, out tag2);

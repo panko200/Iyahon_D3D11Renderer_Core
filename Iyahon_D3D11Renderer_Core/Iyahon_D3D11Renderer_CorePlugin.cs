@@ -3,6 +3,8 @@ using System;
 using System.Reflection;
 using System.Windows;
 using YukkuriMovieMaker.Plugin;
+using Iyahon_D3D11Renderer_Core.D3DEffect;
+using Iyahon_D3D11Renderer_Core.D3DEffect.Effects;
 
 #nullable enable
 namespace Iyahon_D3D11Renderer_Core;
@@ -17,7 +19,7 @@ public class Iyahon_D3D11Renderer_CorePlugin : IPlugin
         Initialize();
         _initialized = true;
     }
-    
+
     public string Name => "イヤホンD3D11レンダラー";
 
     private static void Initialize()
@@ -35,6 +37,11 @@ public class Iyahon_D3D11Renderer_CorePlugin : IPlugin
             DepthSortPropertiesEditorPatch.Apply(harmony);
 
             Log("初期化完了");
+
+            // D3Dエフェクトの組み込みエフェクトを登録
+            D3DEffectRegistry.Register<CubeD3DEffect>();
+            D3DEffectRegistry.Register<SphereD3DEffect>();
+            Log("D3Dエフェクト登録完了");
         }
         catch (Exception ex)
         {

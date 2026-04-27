@@ -1,0 +1,26 @@
+<UserControl x:Class="Iyahon_D3D11Renderer_Core.D3D11SettingsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:Iyahon_D3D11Renderer_Core"
+             xmlns:c="clr-namespace:YukkuriMovieMaker.Controls;assembly=YukkuriMovieMaker.Controls">
+  <StackPanel Margin="5">
+
+    <Grid Margin="0,5">
+      <Label Content="半透明描画モード" VerticalAlignment="Center"/>
+      <c:EnumComboBox Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=TransparencyMode}"
+                      EnumType="{x:Type local:TransparencyMode}"
+                      Width="280" HorizontalAlignment="Right"/>
+    </Grid>
+
+    <Grid Margin="0,5">
+      <Label Content="標準モード層数" VerticalAlignment="Center"/>
+      <c:EnumComboBox Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=StandardDepthLayerCount}"
+                      EnumType="{x:Type local:StandardDepthLayerCount}"
+                      Width="280" HorizontalAlignment="Right"/>
+    </Grid>
+
+    <TextBlock Text="「標準」: depth判定ベースの半透明合成。AA有効。&#x0a;「標準モード層数」: 2/4/8を選択（既定:4層）。&#x0a;「OIT」: 順序非依存の半透明合成。前後関係は近似的。AA無効(Aliased)+FXAA適用。"
+               Foreground="Gray" Margin="0,2,0,5" FontSize="11" TextWrapping="Wrap"/>
+
+  </StackPanel>
+</UserControl>
