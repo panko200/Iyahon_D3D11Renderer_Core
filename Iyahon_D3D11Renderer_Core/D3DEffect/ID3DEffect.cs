@@ -1,21 +1,18 @@
 using System;
-using System.Collections.Generic;
+using System.Numerics;
 using Vortice.Direct3D11;
 
 #nullable enable
 namespace Iyahon_D3D11Renderer_Core.D3DEffect;
 
 /// <summary>
-/// D3Dエフェクトのパラメータ。
-/// エフェクトに渡す values（アニメーション値等）を格納する。
+/// D3D描画時に各エフェクトに渡される共通コンテキスト。
+/// エフェクト固有パラメータは各 ID3DEffect 実装のプロパティで設定する。
 /// </summary>
-public class D3DEffectParameters
+public class D3DRenderContext
 {
-    /// <summary>エフェクト固有のfloatパラメータ</summary>
-    public Dictionary<string, float> FloatParams { get; } = new();
-
-    /// <summary>エフェクト固有のboolパラメータ</summary>
-    public Dictionary<string, bool> BoolParams { get; } = new();
+    /// <summary>ワールド変換行列</summary>
+    public Matrix4x4 WorldMatrix { get; set; }
 
     /// <summary>テクスチャ幅（ピクセル）</summary>
     public int TextureWidth { get; set; }
@@ -29,11 +26,14 @@ public class D3DEffectParameters
     /// <summary>画面高さの半分</summary>
     public float HalfScreenHeight { get; set; }
 
-    public float GetFloat(string key, float defaultValue = 0f)
-        => FloatParams.TryGetValue(key, out var v) ? v : defaultValue;
+    /// <summary>不透明度 (0.0〜1.0)</summary>
+    public float Opacity { get; set; } = 1f;
 
-    public bool GetBool(string key, bool defaultValue = false)
-        => BoolParams.TryGetValue(key, out var v) ? v : defaultValue;
+    /// <summary>αクリップ閾値</summary>
+    public float AlphaThreshold { get; set; } = 0.004f;
+
+    /// <summary>YMM4のCamera行列（ビュー行列相当）。カメラ位置計算に使用。</summary>
+    public Matrix4x4 CameraMatrix { get; set; } = Matrix4x4.Identity;
 }
 
 /// <summary>
@@ -50,6 +50,8 @@ public sealed class D3DEffectInfo
 /// <summary>
 /// 外部プラグインが実装するD3Dエフェクトのインターフェース。
 /// 各エフェクトは入力テクスチャを受け取り、D3D11でジオメトリを描画する。
+/// エフェクト固有パラメータは実装クラスのプロパティとして公開し、
+/// 対応する ID3DVideoEffect.ConfigureEffect() で設定する。
 /// </summary>
 public interface ID3DEffect : IDisposable
 {
@@ -69,44 +71,9 @@ public interface ID3DEffect : IDisposable
     /// エフェクトのジオメトリを描画する。
     /// 呼び出し側で RenderTarget, DepthStencil, Viewport, BlendState 等は設定済み。
     /// エフェクトは VS/PS を設定し、入力テクスチャを使って描画する。
+    /// エフェクト固有パラメータは事前にプロパティ経由で設定済みであること。
     /// </summary>
-    /// <param name="ctx">デバイスコンテキスト</param>
-    /// <param name="device">D3D11デバイス</param>
-    /// <param name="inputSrv">入力テクスチャの SRV</param>
-    /// <param name="cbPerObject">PerObject 定数バッファ（WorldMatrix等を書き込み済み）</param>
-    /// <param name="parameters">エフェクトパラメータ</param>
     void Render(ID3D11DeviceContext ctx, ID3D11Device device,
                 ID3D11ShaderResourceView inputSrv,
-                ID3D11Buffer cbPerObject,
-                D3DEffectParameters parameters);
-
-    /// <summary>
-    /// このエフェクトが公開するパラメータ定義の一覧。
-    /// UI生成に使用。
-    /// </summary>
-    IReadOnlyList<D3DEffectParameterDefinition> GetParameterDefinitions();
-}
-
-/// <summary>
-/// エフェクトパラメータの定義（UI生成用）。
-/// </summary>
-public sealed class D3DEffectParameterDefinition
-{
-    public required string Key { get; init; }
-    public required string DisplayName { get; init; }
-    public required D3DEffectParameterType Type { get; init; }
-    public float DefaultValue { get; init; }
-    public float MinValue { get; init; }
-    public float MaxValue { get; init; } = 1000f;
-    public string? GroupName { get; init; }
-    public string? Description { get; init; }
-}
-
-/// <summary>
-/// パラメータの型。
-/// </summary>
-public enum D3DEffectParameterType
-{
-    Float,
-    Bool,
+                D3DRenderContext renderContext);
 }

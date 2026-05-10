@@ -41,7 +41,8 @@ public class Iyahon_D3D11Renderer_CorePlugin : IPlugin
             // D3Dエフェクトの組み込みエフェクトを登録
             D3DEffectRegistry.Register<CubeD3DEffect>();
             D3DEffectRegistry.Register<SphereD3DEffect>();
-            Log("D3Dエフェクト登録完了");
+            D3DEffectRegistry.Register<ExtrusionD3DEffect>();
+            Log("D3Dエフェクト登録完了（立方体, 球, 押し出し）");
         }
         catch (Exception ex)
         {
@@ -56,3 +57,6 @@ public class Iyahon_D3D11Renderer_CorePlugin : IPlugin
     internal static void Log(string msg)
         => System.Diagnostics.Debug.WriteLine($"[Iyahon_D3D11Renderer_Core] {msg}");
 }
+
+
+

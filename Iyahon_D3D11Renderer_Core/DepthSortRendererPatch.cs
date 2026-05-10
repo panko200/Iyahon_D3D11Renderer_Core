@@ -234,10 +234,11 @@ internal static class DepthSortRendererPatch
                 var esoList = _effectedSourceOutputsField!.GetValue(eisValue) as IList;
                 if (esoList == null || esoList.Count == 0) continue;
 
-                // ── D3Dエフェクトの検出 ──
-                string? d3dEffectId = null;
-                float depthScale = 1f;
-                float lightIntensity = 0.5f;
+                // ── D3Dエフェクトの検出（ID3DVideoEffect インターフェースで汎用検出） ──
+                ID3DVideoEffect? d3dVideoEffect = null;
+                long itemFrame = 0;
+                long itemLength = 1;
+                int fps = 60;
 
                 try
                 {
@@ -246,34 +247,18 @@ internal static class DepthSortRendererPatch
                     {
                         foreach (var ve in videoEffects)
                         {
-                            if (ve is D3DEffectVideoEffect d3dVe && ve.IsEnabled)
+                            if (ve is ID3DVideoEffect candidate && ve.IsEnabled)
                             {
-                                var effectId = d3dVe.SelectedEffectId;
-                                if (!string.IsNullOrEmpty(effectId))
-                                {
-                                    d3dEffectId = effectId;
+                                d3dVideoEffect = candidate;
 
-                                    // アニメーション値の取得（現在フレーム位置での値）
-                                    // アイテムの長さと現在位置を取得
-                                    try
-                                    {
-                                        var fps = (int)(GetFps(scene) ?? 60.0);
-                                        var itemFrame = GetItemFrame(item, scene) ?? 0L;
-                                        var itemLength = GetItemLength(item) ?? 1L;
-                                        depthScale = d3dVe.EffectSelection switch
-                                        {
-                                            D3DEffectSelection.Cube => (float)d3dVe.CubeDepthScale.GetValue(itemFrame, itemLength, fps),
-                                            D3DEffectSelection.Sphere => (float)d3dVe.SphereDepthScale.GetValue(itemFrame, itemLength, fps),
-                                            _ => 1f,
-                                        };
-                                        lightIntensity = (float)d3dVe.LightIntensity.GetValue(itemFrame, itemLength, fps);
-                                    }
-                                    catch
-                                    {
-                                        depthScale = 1f;
-                                        lightIntensity = 0.5f;
-                                    }
+                                try
+                                {
+                                    fps = (int)(GetFps(scene) ?? 60.0);
+                                    itemFrame = GetItemFrame(item, scene) ?? 0L;
+                                    itemLength = GetItemLength(item) ?? 1L;
                                 }
+                                catch { }
+
                                 break; // 最初のD3Dエフェクトのみ使用
                             }
                         }
@@ -336,10 +321,11 @@ internal static class DepthSortRendererPatch
                         BoundsCenterY = cy,
                         Opacity = (float)drawDesc.Opacity,
                         Layer = item.Layer,
-                        D3DEffectId = d3dEffectId,
+                        D3DVideoEffect = d3dVideoEffect,
                         OriginalItem = item,
-                        D3DEffectDepthScale = depthScale,
-                        D3DEffectLightIntensity = lightIntensity,
+                        ItemFrame = itemFrame,
+                        ItemLength = itemLength,
+                        Fps = fps,
                     });
                 }
             }

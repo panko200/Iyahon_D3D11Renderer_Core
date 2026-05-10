@@ -8,6 +8,11 @@ namespace Iyahon_D3D11Renderer_Core.D3DEffect;
 /// <summary>
 /// D3Dエフェクトのレジストリ。
 /// 組み込みエフェクトおよび外部プラグインのエフェクトを登録・管理する。
+/// 
+/// 第三者プラグインは以下のように登録する:
+/// <code>
+/// D3DEffectRegistry.Register&lt;MyCustomEffect&gt;();
+/// </code>
 /// </summary>
 public static class D3DEffectRegistry
 {

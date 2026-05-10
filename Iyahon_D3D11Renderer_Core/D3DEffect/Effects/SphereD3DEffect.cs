@@ -18,6 +18,10 @@ public sealed class SphereD3DEffect : ID3DEffect
     public string Name => "球";
     public string Category => "3Dオブジェクト";
 
+    // ── エフェクト固有パラメータ ──
+    public float DepthScale { get; set; } = 1f;
+    public float LightIntensity { get; set; } = 0.5f;
+
     [StructLayout(LayoutKind.Sequential)]
     private struct SphereVertex
     {
@@ -153,7 +157,6 @@ float4 PS_Sphere(PSInput input) : SV_Target
         var vertices = new List<SphereVertex>();
         var indices = new List<ushort>();
 
-        // UV球を生成
         for (int stack = 0; stack <= Stacks; stack++)
         {
             float phi = MathF.PI * stack / Stacks;
@@ -179,7 +182,6 @@ float4 PS_Sphere(PSInput input) : SV_Target
             }
         }
 
-        // インデックス
         for (int stack = 0; stack < Stacks; stack++)
         {
             for (int slice = 0; slice < Slices; slice++)
@@ -220,41 +222,22 @@ float4 PS_Sphere(PSInput input) : SV_Target
 
     public void Render(ID3D11DeviceContext ctx, ID3D11Device device,
                        ID3D11ShaderResourceView inputSrv,
-                       ID3D11Buffer cbPerObject,
-                       D3DEffectParameters parameters)
+                       D3DRenderContext renderContext)
     {
         if (!_initialized || _vs == null || _ps == null) return;
 
-        float depthScale = parameters.GetFloat("DepthScale", 1f);
-        float lightIntensity = parameters.GetFloat("LightIntensity", 0.5f);
-        float opacity = parameters.GetFloat("Opacity", 1f);
-        float alphaThreshold = parameters.GetFloat("AlphaThreshold", 0.004f);
-
         var cb = new SphereCb
         {
-            HalfWidth = parameters.HalfScreenWidth,
-            HalfHeight = parameters.HalfScreenHeight,
-            Opacity = opacity,
-            AlphaThreshold = alphaThreshold,
-            DepthScale = depthScale,
-            LightIntensity = lightIntensity,
-            TexWidth = parameters.TextureWidth,
-            TexHeight = parameters.TextureHeight,
+            WorldMatrix = renderContext.WorldMatrix,
+            HalfWidth = renderContext.HalfScreenWidth,
+            HalfHeight = renderContext.HalfScreenHeight,
+            Opacity = renderContext.Opacity,
+            AlphaThreshold = renderContext.AlphaThreshold,
+            DepthScale = DepthScale,
+            LightIntensity = LightIntensity,
+            TexWidth = renderContext.TextureWidth,
+            TexHeight = renderContext.TextureHeight,
         };
-
-        if (parameters.FloatParams.ContainsKey("_WorldM11"))
-        {
-            cb.WorldMatrix = new Matrix4x4(
-                parameters.GetFloat("_WorldM11"), parameters.GetFloat("_WorldM12"),
-                parameters.GetFloat("_WorldM13"), parameters.GetFloat("_WorldM14"),
-                parameters.GetFloat("_WorldM21"), parameters.GetFloat("_WorldM22"),
-                parameters.GetFloat("_WorldM23"), parameters.GetFloat("_WorldM24"),
-                parameters.GetFloat("_WorldM31"), parameters.GetFloat("_WorldM32"),
-                parameters.GetFloat("_WorldM33"), parameters.GetFloat("_WorldM34"),
-                parameters.GetFloat("_WorldM41"), parameters.GetFloat("_WorldM42"),
-                parameters.GetFloat("_WorldM43"), parameters.GetFloat("_WorldM44")
-            );
-        }
 
         ctx.UpdateSubresource(ref cb, _cbBuffer!);
 
@@ -270,35 +253,6 @@ float4 PS_Sphere(PSInput input) : SV_Target
         ctx.PSSetShaderResource(0, inputSrv);
 
         ctx.DrawIndexed(_indexCount, 0, 0);
-    }
-
-    public IReadOnlyList<D3DEffectParameterDefinition> GetParameterDefinitions()
-    {
-        return new[]
-        {
-            new D3DEffectParameterDefinition
-            {
-                Key = "DepthScale",
-                DisplayName = "球の深さ",
-                Type = D3DEffectParameterType.Float,
-                DefaultValue = 1f,
-                MinValue = 0f,
-                MaxValue = 10f,
-                GroupName = "球",
-                Description = "球の奥行きスケール（1.0 = 正球）",
-            },
-            new D3DEffectParameterDefinition
-            {
-                Key = "LightIntensity",
-                DisplayName = "ライティング強度",
-                Type = D3DEffectParameterType.Float,
-                DefaultValue = 0.5f,
-                MinValue = 0f,
-                MaxValue = 1f,
-                GroupName = "球",
-                Description = "簡易ライティングの強度（0 = 無効, 1 = 最大）",
-            },
-        };
     }
 
     public void Dispose()

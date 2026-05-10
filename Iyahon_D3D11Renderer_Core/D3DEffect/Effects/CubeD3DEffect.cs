@@ -18,6 +18,10 @@ public sealed class CubeD3DEffect : ID3DEffect
     public string Name => "立方体";
     public string Category => "3Dオブジェクト";
 
+    // ── エフェクト固有パラメータ（VideoEffect から設定される） ──
+    public float DepthScale { get; set; } = 100f;
+    public float LightIntensity { get; set; } = 0.5f;
+
     [StructLayout(LayoutKind.Sequential)]
     private struct CubeVertex
     {
@@ -108,7 +112,6 @@ float4 PS_Cube(PSInput input) : SV_Target
 
         try
         {
-            // シェーダコンパイル
             var vsBlob = Vortice.D3DCompiler.Compiler.Compile(
                 ShaderSource, "VS_Cube", "cube_shader",
                 Array.Empty<ShaderMacro>(), null,
@@ -132,11 +135,9 @@ float4 PS_Cube(PSInput input) : SV_Target
             _ps = device.CreatePixelShader(psBlob);
             psBlob.Dispose();
 
-            // 定数バッファ
             _cbBuffer = device.CreateBuffer(new BufferDescription(
                 Marshal.SizeOf<CubeCb>(), BindFlags.ConstantBuffer));
 
-            // 立方体ジオメトリ作成
             CreateCubeGeometry(device);
 
             _initialized = true;
@@ -153,7 +154,6 @@ float4 PS_Cube(PSInput input) : SV_Target
         var vertices = new List<CubeVertex>();
         var indices = new List<ushort>();
 
-        // 面定義: (corners[4], normal)
         var faces = new[]
         {
             // 前面 (Z-)
@@ -221,42 +221,20 @@ float4 PS_Cube(PSInput input) : SV_Target
 
     public void Render(ID3D11DeviceContext ctx, ID3D11Device device,
                        ID3D11ShaderResourceView inputSrv,
-                       ID3D11Buffer cbPerObject,
-                       D3DEffectParameters parameters)
+                       D3DRenderContext renderContext)
     {
         if (!_initialized || _vs == null || _ps == null) return;
 
-        float depthScale = parameters.GetFloat("DepthScale", 1f);
-        float lightIntensity = parameters.GetFloat("LightIntensity", 0.5f);
-        float opacity = parameters.GetFloat("Opacity", 1f);
-        float alphaThreshold = parameters.GetFloat("AlphaThreshold", 0.004f);
-
         var cb = new CubeCb
         {
-            // WorldMatrix は呼び出し側のパイプラインから渡される
-            // ここでは独自 CB に同じ値をセット（パラメータ経由）
-            HalfWidth = parameters.HalfScreenWidth,
-            HalfHeight = parameters.HalfScreenHeight,
-            Opacity = opacity,
-            AlphaThreshold = alphaThreshold,
-            DepthScale = depthScale,
-            LightIntensity = lightIntensity,
+            WorldMatrix = renderContext.WorldMatrix,
+            HalfWidth = renderContext.HalfScreenWidth,
+            HalfHeight = renderContext.HalfScreenHeight,
+            Opacity = renderContext.Opacity,
+            AlphaThreshold = renderContext.AlphaThreshold,
+            DepthScale = DepthScale,
+            LightIntensity = LightIntensity,
         };
-
-        // WorldMatrixはparam経由で渡す
-        if (parameters.FloatParams.ContainsKey("_WorldM11"))
-        {
-            cb.WorldMatrix = new Matrix4x4(
-                parameters.GetFloat("_WorldM11"), parameters.GetFloat("_WorldM12"),
-                parameters.GetFloat("_WorldM13"), parameters.GetFloat("_WorldM14"),
-                parameters.GetFloat("_WorldM21"), parameters.GetFloat("_WorldM22"),
-                parameters.GetFloat("_WorldM23"), parameters.GetFloat("_WorldM24"),
-                parameters.GetFloat("_WorldM31"), parameters.GetFloat("_WorldM32"),
-                parameters.GetFloat("_WorldM33"), parameters.GetFloat("_WorldM34"),
-                parameters.GetFloat("_WorldM41"), parameters.GetFloat("_WorldM42"),
-                parameters.GetFloat("_WorldM43"), parameters.GetFloat("_WorldM44")
-            );
-        }
 
         ctx.UpdateSubresource(ref cb, _cbBuffer!);
 
@@ -272,35 +250,6 @@ float4 PS_Cube(PSInput input) : SV_Target
         ctx.PSSetShaderResource(0, inputSrv);
 
         ctx.DrawIndexed(_indexCount, 0, 0);
-    }
-
-    public IReadOnlyList<D3DEffectParameterDefinition> GetParameterDefinitions()
-    {
-        return new[]
-        {
-            new D3DEffectParameterDefinition
-            {
-                Key = "DepthScale",
-                DisplayName = "奥行き",
-                Type = D3DEffectParameterType.Float,
-                DefaultValue = 100f,
-                MinValue = 0f,
-                MaxValue = 500f,
-                GroupName = "立方体",
-                Description = "立方体の奥行きスケール（1.0 = テクスチャ幅と同じ）",
-            },
-            new D3DEffectParameterDefinition
-            {
-                Key = "LightIntensity",
-                DisplayName = "ライティング強度",
-                Type = D3DEffectParameterType.Float,
-                DefaultValue = 0.5f,
-                MinValue = 0f,
-                MaxValue = 1f,
-                GroupName = "立方体",
-                Description = "簡易ライティングの強度（0 = 無効, 1 = 最大）",
-            },
-        };
     }
 
     public void Dispose()

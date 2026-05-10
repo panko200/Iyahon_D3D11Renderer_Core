@@ -999,61 +999,52 @@ float4 PS_Resolve(PSInput input) : SV_Target
     private void DrawItem(RenderItem item, Matrix4x4 world, float halfW, float halfH, float alphaThreshold, float opacityMultiplier = 1f)
     {
         // D3Dエフェクトが設定されている場合、エフェクトのRenderに委譲
-        var effectId = item.D3DEffectId;
+        var d3dVideoEffect = item.D3DVideoEffect;
         var originalItem = item.OriginalItem;
-        var effect = effectId != null && originalItem != null ? GetOrCreateEffect(originalItem, effectId) : null;
 
-        if (effect != null && item.Srv != null)
+        if (d3dVideoEffect != null && originalItem != null && item.Srv != null)
         {
-            try
+            var effectId = d3dVideoEffect.D3DEffectId;
+            var effect = GetOrCreateEffect(originalItem, effectId);
+            if (effect != null)
             {
-                effect.Initialize(_d3d, _ctx);
-
-                var effectParams = new D3DEffectParameters
+                try
                 {
-                    TextureWidth = (int)item.PixelWidth,
-                    TextureHeight = (int)item.PixelHeight,
-                    HalfScreenWidth = halfW,
-                    HalfScreenHeight = halfH,
-                };
-                effectParams.FloatParams["Opacity"] = item.Opacity * opacityMultiplier;
-                effectParams.FloatParams["AlphaThreshold"] = alphaThreshold;
-                effectParams.FloatParams["DepthScale"] = item.D3DEffectDepthScale;
-                effectParams.FloatParams["LightIntensity"] = item.D3DEffectLightIntensity;
+                    effect.Initialize(_d3d, _ctx);
 
-                // ワールド行列の各要素をパラメータとして渡す
-                effectParams.FloatParams["_WorldM11"] = world.M11;
-                effectParams.FloatParams["_WorldM12"] = world.M12;
-                effectParams.FloatParams["_WorldM13"] = world.M13;
-                effectParams.FloatParams["_WorldM14"] = world.M14;
-                effectParams.FloatParams["_WorldM21"] = world.M21;
-                effectParams.FloatParams["_WorldM22"] = world.M22;
-                effectParams.FloatParams["_WorldM23"] = world.M23;
-                effectParams.FloatParams["_WorldM24"] = world.M24;
-                effectParams.FloatParams["_WorldM31"] = world.M31;
-                effectParams.FloatParams["_WorldM32"] = world.M32;
-                effectParams.FloatParams["_WorldM33"] = world.M33;
-                effectParams.FloatParams["_WorldM34"] = world.M34;
-                effectParams.FloatParams["_WorldM41"] = world.M41;
-                effectParams.FloatParams["_WorldM42"] = world.M42;
-                effectParams.FloatParams["_WorldM43"] = world.M43;
-                effectParams.FloatParams["_WorldM44"] = world.M44;
+                    // エフェクト固有パラメータを設定
+                    d3dVideoEffect.ConfigureEffect(effect, item.ItemFrame, item.ItemLength, item.Fps);
 
-                effect.Render(_ctx, _d3d, item.Srv, _cbPerObject!, effectParams);
+                    // 共通コンテキストを構築
+                    var renderContext = new D3DRenderContext
+                    {
+                        WorldMatrix = world,
+                        TextureWidth = (int)item.PixelWidth,
+                        TextureHeight = (int)item.PixelHeight,
+                        HalfScreenWidth = halfW,
+                        HalfScreenHeight = halfH,
+                        Opacity = item.Opacity * opacityMultiplier,
+                        AlphaThreshold = alphaThreshold,
+                        CameraMatrix = item.DrawDescription.Camera,
+                    };
 
-                // エフェクト描画後、元のパイプライン状態を復元
-                _ctx.IASetInputLayout(_inputLayout);
-                _ctx.IASetVertexBuffer(0, _vertexBuffer!, Marshal.SizeOf<Vertex>(), 0);
-                _ctx.IASetPrimitiveTopology(PrimitiveTopology.TriangleStrip);
-                _ctx.VSSetShader(_vs);
-                _ctx.VSSetConstantBuffer(0, _cbPerObject);
-                _ctx.PSSetConstantBuffer(0, _cbPerObject);
+                    effect.Render(_ctx, _d3d, item.Srv, renderContext);
+
+                    // エフェクト描画後、元のパイプライン状態を復元
+                    _ctx.IASetInputLayout(_inputLayout);
+                    _ctx.IASetVertexBuffer(0, _vertexBuffer!, Marshal.SizeOf<Vertex>(), 0);
+                    _ctx.IASetPrimitiveTopology(PrimitiveTopology.TriangleStrip);
+                    _ctx.VSSetShader(_vs);
+                    _ctx.VSSetConstantBuffer(0, _cbPerObject);
+                    _ctx.PSSetConstantBuffer(0, _cbPerObject);
+                    _ctx.RSSetState(_rasterizerState);
+                }
+                catch (Exception ex)
+                {
+                    Iyahon_D3D11Renderer_CorePlugin.Log($"D3Dエフェクト描画エラー: {ex.Message}");
+                }
+                return;
             }
-            catch (Exception ex)
-            {
-                Iyahon_D3D11Renderer_CorePlugin.Log($"D3Dエフェクト描画エラー: {ex.Message}");
-            }
-            return;
         }
 
         // 通常の板ポリ描画
@@ -1182,12 +1173,14 @@ internal sealed class RenderItem
 
     // ── D3Dエフェクト関連 ──
 
-    public string? D3DEffectId { get; init; }
+    /// <summary>D3Dエフェクトの VideoEffect (ID3DVideoEffect 実装)</summary>
+    public ID3DVideoEffect? D3DVideoEffect { get; init; }
     public YukkuriMovieMaker.Project.Items.IVideoItem? OriginalItem { get; init; }
 
-    /// <summary>D3Dエフェクトの奥行きスケール</summary>
-    public float D3DEffectDepthScale { get; init; } = 1f;
-
-    /// <summary>D3Dエフェクトのライティング強度</summary>
-    public float D3DEffectLightIntensity { get; init; } = 0.5f;
+    /// <summary>アイテム内の現在フレーム位置</summary>
+    public long ItemFrame { get; init; }
+    /// <summary>アイテムの長さ（フレーム数）</summary>
+    public long ItemLength { get; init; }
+    /// <summary>FPS</summary>
+    public int Fps { get; init; }
 }
