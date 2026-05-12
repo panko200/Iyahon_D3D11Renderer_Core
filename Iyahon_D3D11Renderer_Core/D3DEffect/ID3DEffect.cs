@@ -14,13 +14,27 @@ public class D3DRenderContext
     /// <summary>ワールド変換行列</summary>
     public Matrix4x4 WorldMatrix { get; set; }
 
+    /// <summary>
+    /// 3Dプレビュー用の ViewProjection 行列。
+    /// HalfScreenWidth == 0 のとき、エフェクトはこの行列でクリップ座標変換を行う。
+    /// HalfScreenWidth > 0 のときは従来のスクリーン空間変換を使用する。
+    /// </summary>
+    public Matrix4x4 ViewProjectionMatrix { get; set; } = Matrix4x4.Identity;
+
+    /// <summary>
+    /// 描画カメラのワールド座標位置。
+    /// 3Dプレビュー時は Preview のカメラ位置を設定する。
+    /// レイマーチング系エフェクト（押し出し等）で使用。
+    /// </summary>
+    public Vector3 CameraWorldPosition { get; set; } = new Vector3(0, 0, 1000);
+
     /// <summary>テクスチャ幅（ピクセル）</summary>
     public int TextureWidth { get; set; }
 
     /// <summary>テクスチャ高さ（ピクセル）</summary>
     public int TextureHeight { get; set; }
 
-    /// <summary>画面幅の半分</summary>
+    /// <summary>画面幅の半分 (0 の場合は ViewProjectionMatrix を使用)</summary>
     public float HalfScreenWidth { get; set; }
 
     /// <summary>画面高さの半分</summary>

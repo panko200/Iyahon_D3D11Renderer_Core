@@ -1,15 +1,17 @@
+using Iyahon_D3D11Renderer_Core;
+using Iyahon_D3D11Renderer_Core.D3DEffect;
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using Iyahon_D3D11Renderer_Core.D3DEffect;
 using Vortice.Direct3D;
 using Vortice.Direct3D11;
 using Vortice.DXGI;
 using Vortice.Mathematics;
 using YukkuriMovieMaker.Commons;
 using YukkuriMovieMaker.Player.Video;
-using Iyahon_D3D11Renderer_Core.D3DEffect;
 
 #nullable enable
 namespace Iyahon_D3D11Renderer_Core;
@@ -281,8 +283,10 @@ float4 PS_Resolve(PSInput input) : SV_Target
             // ── 最終レンダーターゲット (B8G8R8A8_UNorm) ──
             _renderTarget = _d3d.CreateTexture2D(new Texture2DDescription
             {
-                Width = width, Height = height,
-                MipLevels = 1, ArraySize = 1,
+                Width = width,
+                Height = height,
+                MipLevels = 1,
+                ArraySize = 1,
                 Format = Format.B8G8R8A8_UNorm,
                 SampleDescription = new SampleDescription(1, 0),
                 Usage = ResourceUsage.Default,
@@ -294,8 +298,10 @@ float4 PS_Resolve(PSInput input) : SV_Target
             // ── 深度バッファ ──
             _depthStencil = _d3d.CreateTexture2D(new Texture2DDescription
             {
-                Width = width, Height = height,
-                MipLevels = 1, ArraySize = 1,
+                Width = width,
+                Height = height,
+                MipLevels = 1,
+                ArraySize = 1,
                 Format = Format.D24_UNorm_S8_UInt,
                 SampleDescription = new SampleDescription(1, 0),
                 Usage = ResourceUsage.Default,
@@ -306,8 +312,10 @@ float4 PS_Resolve(PSInput input) : SV_Target
             // ── OIT Accumulation バッファ (R16G16B16A16_Float) ──
             _accumTexture = _d3d.CreateTexture2D(new Texture2DDescription
             {
-                Width = width, Height = height,
-                MipLevels = 1, ArraySize = 1,
+                Width = width,
+                Height = height,
+                MipLevels = 1,
+                ArraySize = 1,
                 Format = Format.R16G16B16A16_Float,
                 SampleDescription = new SampleDescription(1, 0),
                 Usage = ResourceUsage.Default,
@@ -319,8 +327,10 @@ float4 PS_Resolve(PSInput input) : SV_Target
             // ── OIT Revealage バッファ (R16_Float) ──
             _revealTexture = _d3d.CreateTexture2D(new Texture2DDescription
             {
-                Width = width, Height = height,
-                MipLevels = 1, ArraySize = 1,
+                Width = width,
+                Height = height,
+                MipLevels = 1,
+                ArraySize = 1,
                 Format = Format.R16_Float,
                 SampleDescription = new SampleDescription(1, 0),
                 Usage = ResourceUsage.Default,
@@ -332,8 +342,10 @@ float4 PS_Resolve(PSInput input) : SV_Target
             // ── FXAA 中間バッファ (B8G8R8A8_UNorm) ──
             _fxaaTexture = _d3d.CreateTexture2D(new Texture2DDescription
             {
-                Width = width, Height = height,
-                MipLevels = 1, ArraySize = 1,
+                Width = width,
+                Height = height,
+                MipLevels = 1,
+                ArraySize = 1,
                 Format = Format.B8G8R8A8_UNorm,
                 SampleDescription = new SampleDescription(1, 0),
                 Usage = ResourceUsage.Default,
@@ -787,7 +799,7 @@ float4 PS_Resolve(PSInput input) : SV_Target
 
             foreach (var (item, world, _) in itemsWithWorld)
             {
-                DrawItem(item, world, halfW, halfH, alphaThreshold: 0.999f);
+                DrawItem(item, world, halfW, halfH, 0.999f, _psOpaque!, _samplerLinear!);
             }
 
             // ═══════════════════════════════════════════
@@ -811,7 +823,7 @@ float4 PS_Resolve(PSInput input) : SV_Target
 
             foreach (var (item, world, _) in sorted)
             {
-                DrawItem(item, world, halfW, halfH, alphaThreshold: 0.004f);
+                DrawItem(item, world, halfW, halfH, 0.004f, _psSemiTrans!, _samplerLinear!);
             }
 
             // ═══════════════════════════════════════════
@@ -827,7 +839,7 @@ float4 PS_Resolve(PSInput input) : SV_Target
                     float opacityMul = pass == 0 ? 1f : 0.5f;
                     foreach (var (item, world, _) in sorted)
                     {
-                        DrawItem(item, world, halfW, halfH, alphaThreshold: 0.004f, opacityMul);
+                        DrawItem(item, world, halfW, halfH, 0.004f, _psSemiTrans!, _samplerLinear!, opacityMul);
                     }
                 }
             }
@@ -843,7 +855,7 @@ float4 PS_Resolve(PSInput input) : SV_Target
 
             foreach (var (item, world, _) in itemsWithWorld)
             {
-                DrawItem(item, world, halfW, halfH, alphaThreshold: 0.999f, 1f);
+                DrawItem(item, world, halfW, halfH, 0.999f, _psOpaque!, _samplerLinear!, 1f);
             }
 
             // ═══════════════════════════════════════════
@@ -855,7 +867,7 @@ float4 PS_Resolve(PSInput input) : SV_Target
 
             foreach (var (item, world, _) in sorted)
             {
-                DrawItem(item, world, halfW, halfH, alphaThreshold: 0.004f, 1f);
+                DrawItem(item, world, halfW, halfH, 0.004f, _psSemiTrans!, _samplerLinear!, 1f);
             }
 
             // ═══════════════════════════════════════════
@@ -868,7 +880,7 @@ float4 PS_Resolve(PSInput input) : SV_Target
 
             foreach (var (item, world, _) in sorted)
             {
-                DrawItem(item, world, halfW, halfH, alphaThreshold: 0.004f, 1f);
+                DrawItem(item, world, halfW, halfH, 0.004f, _psSemiTrans!, _samplerLinear!, 1f);
             }
 
             _ctx.OMSetRenderTargets((ID3D11RenderTargetView?)null, null);
@@ -929,7 +941,7 @@ float4 PS_Resolve(PSInput input) : SV_Target
 
             foreach (var (item, world) in itemsWithWorld)
             {
-                DrawItem(item, world, halfW, halfH, alphaThreshold: 0.999f);
+                DrawItem(item, world, halfW, halfH, 0.999f, _psOpaque!, _samplerPoint!);
             }
 
             // パス2: OIT 蓄積パス
@@ -941,7 +953,7 @@ float4 PS_Resolve(PSInput input) : SV_Target
 
             foreach (var (item, world) in itemsWithWorld)
             {
-                DrawItem(item, world, halfW, halfH, alphaThreshold: 0.004f);
+                DrawItem(item, world, halfW, halfH, 0.004f, _psOIT!, _samplerPoint!);
             }
 
             // パス3: 解決パス
@@ -996,7 +1008,7 @@ float4 PS_Resolve(PSInput input) : SV_Target
         }
     }
 
-    private void DrawItem(RenderItem item, Matrix4x4 world, float halfW, float halfH, float alphaThreshold, float opacityMultiplier = 1f)
+    private void DrawItem(RenderItem item, Matrix4x4 world, float halfW, float halfH, float alphaThreshold, ID3D11PixelShader activePs, ID3D11SamplerState activeSampler, float opacityMultiplier = 1f)
     {
         // D3Dエフェクトが設定されている場合、エフェクトのRenderに委譲
         var d3dVideoEffect = item.D3DVideoEffect;
@@ -1038,6 +1050,8 @@ float4 PS_Resolve(PSInput input) : SV_Target
                     _ctx.VSSetConstantBuffer(0, _cbPerObject);
                     _ctx.PSSetConstantBuffer(0, _cbPerObject);
                     _ctx.RSSetState(_rasterizerState);
+                    _ctx.PSSetShader(activePs);
+                    _ctx.PSSetSampler(0, activeSampler);
                 }
                 catch (Exception ex)
                 {

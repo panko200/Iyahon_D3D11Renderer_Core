@@ -1,7 +1,9 @@
+using Iyahon_D3D11Renderer_Core.D3DEffect;
 using System;
 using System.Collections.Generic;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using Iyahon_D3D11Renderer_Core.D3DEffect;
 using Vortice.Direct3D;
 using Vortice.Direct3D11;
 using Vortice.DXGI;
@@ -39,17 +41,18 @@ public sealed class ExtrusionD3DEffect : ID3DEffect
     {
         public Matrix4x4 WorldMatrix;       // 64
         public Matrix4x4 ScaleMatrix;       // 64 -> 128
+        public Matrix4x4 ViewProjMatrix;    // 64 -> 192
         public float HalfWidth;             // 4
         public float HalfHeight;            // 4
         public float Opacity;               // 4
-        public float AlphaThreshold;        // 4  -> 144
+        public float AlphaThreshold;        // 4  -> 208
         public float Thickness;             // 4
         public float LightIntensity;        // 4
         public int ExtrusionType;           // 4
-        public float Attenuation;           // 4  -> 160
-        public Vector4 SideColor;           // 16 -> 176
+        public float Attenuation;           // 4  -> 224
+        public Vector4 SideColor;           // 16 -> 240
         public Vector3 CameraLocalPos;      // 12
-        public float _pad0;                 // 4  -> 192
+        public float IsOrthographic;        // 4  -> 256
     }
 
     private bool _initialized;
@@ -69,6 +72,7 @@ cbuffer ExtrusionCb : register(b0)
 {
     row_major float4x4 WorldMatrix;
     row_major float4x4 ScaleMatrix;
+    row_major float4x4 ViewProjMatrix;
     float HalfWidth;
     float HalfHeight;
     float Opacity;
@@ -79,7 +83,7 @@ cbuffer ExtrusionCb : register(b0)
     float Attenuation;
     float4 SideColor;
     float3 CameraLocalPos;
-    float _pad0;
+    float IsOrthographic;
 };
 
 struct VSInput  { float3 Pos : POSITION; float2 UV : TEXCOORD0; };
@@ -100,10 +104,19 @@ PSInput VS_Extrusion(VSInput input)
     float4 scaled = mul(float4(input.Pos, 1.0), ScaleMatrix);
     float4 pos = mul(scaled, WorldMatrix);
 
-    o.Pos.x =  pos.x / HalfWidth;
-    o.Pos.y = -pos.y / HalfHeight;
-    o.Pos.z = -pos.z / 200000.0 + 0.5 * pos.w;
-    o.Pos.w =  pos.w;
+    if (HalfWidth > 0.0)
+    {
+        // Screen-space transform (DepthSortRenderer)
+        o.Pos.x =  pos.x / HalfWidth;
+        o.Pos.y = -pos.y / HalfHeight;
+        o.Pos.z = -pos.z / 200000.0 + 0.5 * pos.w;
+        o.Pos.w =  pos.w;
+    }
+    else
+    {
+        // ViewProjection transform (3D Preview)
+        o.Pos = mul(pos, ViewProjMatrix);
+    }
 
     o.UV = input.UV;
     o.LocalPos = input.Pos;
@@ -116,8 +129,17 @@ PSOutput PS_Extrusion(PSInput input)
     output.Color = float4(0, 0, 0, 0);
     output.Depth = input.Pos.z;
 
-    float3 ro = CameraLocalPos;
-    float3 rd = normalize(input.LocalPos - CameraLocalPos);
+    float3 ro, rd;
+    if (IsOrthographic > 0.5)
+    {
+        rd = normalize(CameraLocalPos); // CameraLocalPos acts as ray direction
+        ro = input.LocalPos - rd * 2.0; // Start outside the volume
+    }
+    else
+    {
+        ro = CameraLocalPos;
+        rd = normalize(input.LocalPos - CameraLocalPos);
+    }
 
     // ray-box intersection (+-0.5 box)
     float3 invDir = 1.0 / rd;
@@ -173,12 +195,23 @@ PSOutput PS_Extrusion(PSInput input)
 
     if (hitT < 0.0) discard;
 
-    // SV_Depth: hitPos (local +-0.5) -> Scale -> World -> custom clip Z
+    // SV_Depth: hitPos (local +-0.5) -> Scale -> World -> clip Z
     float4 scaledHit = mul(float4(hitPos, 1.0), ScaleMatrix);
     float4 worldHit = mul(scaledHit, WorldMatrix);
-    float clipZ = -worldHit.z / 200000.0 + 0.5 * worldHit.w;
-    float clipW = worldHit.w;
-    output.Depth = saturate(clipZ / clipW);
+
+    if (HalfWidth > 0.0)
+    {
+        // Screen-space depth (DepthSortRenderer)
+        float clipZ = -worldHit.z / 200000.0 + 0.5 * worldHit.w;
+        float clipW = worldHit.w;
+        output.Depth = saturate(clipZ / clipW);
+    }
+    else
+    {
+        // ViewProjection depth (3D Preview)
+        float4 clipHit = mul(worldHit, ViewProjMatrix);
+        output.Depth = saturate(clipHit.z / clipHit.w);
+    }
 
     // front/back face detection (Z near +-0.5)
     bool isFace = (abs(hitPos.z) > 0.499);
@@ -359,47 +392,82 @@ PSOutput PS_Extrusion(PSInput input)
 
         var scaleMatrix = Matrix4x4.CreateScale(1f, 1f, Thickness);
 
-        // Camera position from CameraMatrix (view matrix)
-        // Same approach as Pseudo3DExtrusion:
-        //   invView.Translation = camera world position
-        // Then transform to local space via inverse of the model matrix
-        // (model = everything in WorldMatrix except Camera and d2dProj)
-        //
-        // WorldMatrix = S * Toffset * Zoom * Rz * Ry * Rx * Tdraw * Camera * d2dProj
-        // model part  = S * Toffset * Zoom * Rz * Ry * Rx * Tdraw
-        //
-        // To get modelMatrix, we strip Camera and d2dProj from WorldMatrix:
-        //   WorldMatrix = modelMatrix * Camera * d2dProj
-        //   modelMatrix = WorldMatrix * inv(d2dProj) * inv(Camera)
+        // Compute CameraLocalPos based on rendering mode
+        Vector3 cameraLocalPos;
+        float isOrthographic = 0f;
 
-        var cam = renderContext.CameraMatrix;
-        var d2dProj = new Matrix4x4(
-            1f, 0f, 0f, 0f,
-            0f, 1f, 0f, 0f,
-            0f, 0f, 1f, -1f / 1000f,
-            0f, 0f, 0f, 1f
-        );
+        if (renderContext.HalfScreenWidth > 0)
+        {
+            // Normal mode (DepthSortRenderer) - compute from CameraMatrix + d2dProj
+            var cam = renderContext.CameraMatrix;
+            var d2dProj = new Matrix4x4(
+                1f, 0f, 0f, 0f,
+                0f, 1f, 0f, 0f,
+                0f, 0f, 1f, -1f / 1000f,
+                0f, 0f, 0f, 1f
+            );
 
-        Matrix4x4.Invert(d2dProj, out var invD2dProj);
-        Matrix4x4.Invert(cam, out var invCam);
+            var combined = cam * d2dProj;
+            // Check if W is independent of X, Y, and Z (true orthographic)
+            if (Math.Abs(combined.M14) < 0.00001f &&
+                Math.Abs(combined.M24) < 0.00001f &&
+                Math.Abs(combined.M34) < 0.00001f)
+            {
+                isOrthographic = 1f;
+            }
 
-        // Camera world position (same as Pseudo3DExtrusion)
-        var cameraWorldPos = Vector3.Transform(new Vector3(0, 0, 1000), invCam);
+            Matrix4x4.Invert(d2dProj, out var invD2dProj);
+            Matrix4x4.Invert(cam, out var invCam);
 
-        // Model matrix (without Camera and d2dProj)
-        var modelMatrix = renderContext.WorldMatrix * invD2dProj * invCam;
+            var modelMatrix = renderContext.WorldMatrix * invD2dProj * invCam;
+            var effectiveModel = scaleMatrix * modelMatrix;
+            Matrix4x4.Invert(effectiveModel, out var invEffectiveModel);
 
-        // Effective model = Scale * modelMatrix
-        var effectiveModel = scaleMatrix * modelMatrix;
-        Matrix4x4.Invert(effectiveModel, out var invEffectiveModel);
+            if (isOrthographic > 0.5f)
+            {
+                var cameraForwardWorld = Vector3.TransformNormal(new Vector3(0, 0, -1), invCam);
+                cameraLocalPos = Vector3.Normalize(Vector3.TransformNormal(cameraForwardWorld, invEffectiveModel));
+            }
+            else
+            {
+                var cameraWorldPos = Vector3.Transform(new Vector3(0, 0, 1000), invCam);
+                cameraLocalPos = Vector3.Transform(cameraWorldPos, invEffectiveModel);
+            }
+        }
+        else
+        {
+            // ViewProj mode (3D Preview) - use CameraWorldPosition from context
+            var viewProj = renderContext.ViewProjectionMatrix;
+            if (Math.Abs(viewProj.M14) < 0.00001f &&
+                Math.Abs(viewProj.M24) < 0.00001f &&
+                Math.Abs(viewProj.M34) < 0.00001f)
+            {
+                isOrthographic = 1f;
+            }
 
-        // Camera position in local (+-0.5) box space
-        var cameraLocalPos = Vector3.Transform(cameraWorldPos, invEffectiveModel);
+            var effectiveModel = scaleMatrix * renderContext.WorldMatrix;
+            Matrix4x4.Invert(effectiveModel, out var invEffectiveModel);
+
+            if (isOrthographic > 0.5f)
+            {
+                Matrix4x4.Invert(viewProj, out var invViewProj);
+                var rayDirWorld = Vector3.Normalize(
+                    Vector3.Transform(new Vector3(0, 0, 1), invViewProj) -
+                    Vector3.Transform(new Vector3(0, 0, 0), invViewProj));
+                cameraLocalPos = Vector3.Normalize(Vector3.TransformNormal(rayDirWorld, invEffectiveModel));
+            }
+            else
+            {
+                var cameraWorldPos = renderContext.CameraWorldPosition;
+                cameraLocalPos = Vector3.Transform(cameraWorldPos, invEffectiveModel);
+            }
+        }
 
         var cb = new ExtrusionCb
         {
             WorldMatrix = renderContext.WorldMatrix,
             ScaleMatrix = scaleMatrix,
+            ViewProjMatrix = renderContext.ViewProjectionMatrix,
             HalfWidth = renderContext.HalfScreenWidth,
             HalfHeight = renderContext.HalfScreenHeight,
             Opacity = renderContext.Opacity,
@@ -410,6 +478,7 @@ PSOutput PS_Extrusion(PSInput input)
             Attenuation = Attenuation,
             SideColor = SideColor,
             CameraLocalPos = cameraLocalPos,
+            IsOrthographic = isOrthographic,
         };
 
         ctx.UpdateSubresource(ref cb, _cbBuffer!);

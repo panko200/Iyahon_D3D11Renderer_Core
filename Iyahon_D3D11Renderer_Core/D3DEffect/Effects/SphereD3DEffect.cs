@@ -33,15 +33,16 @@ public sealed class SphereD3DEffect : ID3DEffect
     [StructLayout(LayoutKind.Sequential)]
     private struct SphereCb
     {
-        public Matrix4x4 WorldMatrix;   // 64
-        public float HalfWidth;         // 4
-        public float HalfHeight;        // 4
-        public float Opacity;           // 4
-        public float AlphaThreshold;    // 4
-        public float DepthScale;        // 4
-        public float LightIntensity;    // 4
-        public float TexWidth;          // 4
-        public float TexHeight;         // 4  → 96 bytes
+        public Matrix4x4 WorldMatrix;      // 64
+        public Matrix4x4 ViewProjMatrix;   // 64 -> 128
+        public float HalfWidth;            // 4
+        public float HalfHeight;           // 4
+        public float Opacity;              // 4
+        public float AlphaThreshold;       // 4  -> 144
+        public float DepthScale;           // 4
+        public float LightIntensity;       // 4
+        public float TexWidth;             // 4
+        public float TexHeight;            // 4  -> 160 bytes
     }
 
     private bool _initialized;
@@ -60,6 +61,7 @@ public sealed class SphereD3DEffect : ID3DEffect
 cbuffer SphereCb : register(b0)
 {
     row_major float4x4 WorldMatrix;
+    row_major float4x4 ViewProjMatrix;
     float HalfWidth;
     float HalfHeight;
     float Opacity;
@@ -83,10 +85,19 @@ PSInput VS_Sphere(VSInput input)
     float3 scaledPos = input.Pos * float3(1.0, 1.0, sphereRadius * DepthScale);
     float4 pos = mul(float4(scaledPos, 1.0), WorldMatrix);
 
-    o.Pos.x =  pos.x / HalfWidth;
-    o.Pos.y = -pos.y / HalfHeight;
-    o.Pos.z = -pos.z / 200000.0 + 0.5 * pos.w;
-    o.Pos.w =  pos.w;
+    if (HalfWidth > 0.0)
+    {
+        // Screen-space transform (DepthSortRenderer)
+        o.Pos.x =  pos.x / HalfWidth;
+        o.Pos.y = -pos.y / HalfHeight;
+        o.Pos.z = -pos.z / 200000.0 + 0.5 * pos.w;
+        o.Pos.w =  pos.w;
+    }
+    else
+    {
+        // ViewProjection transform (3D Preview)
+        o.Pos = mul(pos, ViewProjMatrix);
+    }
 
     o.UV = input.UV;
     o.Norm = mul(float4(input.Norm, 0.0), WorldMatrix).xyz;
@@ -229,6 +240,7 @@ float4 PS_Sphere(PSInput input) : SV_Target
         var cb = new SphereCb
         {
             WorldMatrix = renderContext.WorldMatrix,
+            ViewProjMatrix = renderContext.ViewProjectionMatrix,
             HalfWidth = renderContext.HalfScreenWidth,
             HalfHeight = renderContext.HalfScreenHeight,
             Opacity = renderContext.Opacity,

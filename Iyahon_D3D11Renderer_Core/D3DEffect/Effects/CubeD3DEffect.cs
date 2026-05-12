@@ -33,15 +33,16 @@ public sealed class CubeD3DEffect : ID3DEffect
     [StructLayout(LayoutKind.Sequential)]
     private struct CubeCb
     {
-        public Matrix4x4 WorldMatrix;   // 64
-        public float HalfWidth;         // 4
-        public float HalfHeight;        // 4
-        public float Opacity;           // 4
-        public float AlphaThreshold;    // 4
-        public float DepthScale;        // 4
-        public float LightIntensity;    // 4
-        public float _pad0;             // 4
-        public float _pad1;             // 4  → 96 bytes (16倍数 OK)
+        public Matrix4x4 WorldMatrix;      // 64
+        public Matrix4x4 ViewProjMatrix;   // 64 -> 128
+        public float HalfWidth;            // 4
+        public float HalfHeight;           // 4
+        public float Opacity;              // 4
+        public float AlphaThreshold;       // 4  -> 144
+        public float DepthScale;           // 4
+        public float LightIntensity;       // 4
+        public float _pad0;                // 4
+        public float _pad1;                // 4  -> 160 bytes (16x OK)
     }
 
     private bool _initialized;
@@ -57,6 +58,7 @@ public sealed class CubeD3DEffect : ID3DEffect
 cbuffer CubeCb : register(b0)
 {
     row_major float4x4 WorldMatrix;
+    row_major float4x4 ViewProjMatrix;
     float HalfWidth;
     float HalfHeight;
     float Opacity;
@@ -79,10 +81,19 @@ PSInput VS_Cube(VSInput input)
     float3 scaledPos = input.Pos * float3(1.0, 1.0, DepthScale);
     float4 pos = mul(float4(scaledPos, 1.0), WorldMatrix);
 
-    o.Pos.x =  pos.x / HalfWidth;
-    o.Pos.y = -pos.y / HalfHeight;
-    o.Pos.z = -pos.z / 200000.0 + 0.5 * pos.w;
-    o.Pos.w =  pos.w;
+    if (HalfWidth > 0.0)
+    {
+        // Screen-space transform (DepthSortRenderer)
+        o.Pos.x =  pos.x / HalfWidth;
+        o.Pos.y = -pos.y / HalfHeight;
+        o.Pos.z = -pos.z / 200000.0 + 0.5 * pos.w;
+        o.Pos.w =  pos.w;
+    }
+    else
+    {
+        // ViewProjection transform (3D Preview)
+        o.Pos = mul(pos, ViewProjMatrix);
+    }
 
     o.UV = input.UV;
     o.Norm = mul(float4(input.Norm, 0.0), WorldMatrix).xyz;
@@ -228,6 +239,7 @@ float4 PS_Cube(PSInput input) : SV_Target
         var cb = new CubeCb
         {
             WorldMatrix = renderContext.WorldMatrix,
+            ViewProjMatrix = renderContext.ViewProjectionMatrix,
             HalfWidth = renderContext.HalfScreenWidth,
             HalfHeight = renderContext.HalfScreenHeight,
             Opacity = renderContext.Opacity,
