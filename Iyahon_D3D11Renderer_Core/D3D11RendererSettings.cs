@@ -4,9 +4,6 @@ using YukkuriMovieMaker.Plugin;
 #nullable enable
 namespace Iyahon_D3D11Renderer_Core;
 
-/// <summary>
-/// D3D11 半透明描画モード
-/// </summary>
 public enum TransparencyMode
 {
     [Display(Name = "OIT（順序非依存・FXAA付き）")]
@@ -16,9 +13,6 @@ public enum TransparencyMode
     Standard,
 }
 
-/// <summary>
-/// 標準モードの深度レイヤー数。
-/// </summary>
 public enum StandardDepthLayerCount
 {
     [Display(Name = "2層（軽量）")]
@@ -31,9 +25,21 @@ public enum StandardDepthLayerCount
     Eight = 8,
 }
 
-/// <summary>
-/// YMM4 設定画面「その他」カテゴリに表示される D3D11 描画設定。
-/// </summary>
+public enum ShadowResolution
+{
+    [Display(Name = "低（512px：超軽量）")]
+    Low = 512,
+
+    [Display(Name = "中（1024px：標準）")]
+    Medium = 1024,
+
+    [Display(Name = "高（2048px：綺麗・推奨）")]
+    High = 2048,
+
+    [Display(Name = "超高（4096px：高精細・重い）")]
+    Ultra = 4096,
+}
+
 internal class D3D11RendererSettings : SettingsBase<D3D11RendererSettings>
 {
     public override SettingsCategory Category => SettingsCategory.Other;
@@ -43,19 +49,46 @@ internal class D3D11RendererSettings : SettingsBase<D3D11RendererSettings>
 
     private TransparencyMode transparencyMode = TransparencyMode.OIT;
     private StandardDepthLayerCount standardDepthLayerCount = StandardDepthLayerCount.Four;
+    private ShadowResolution shadowResolution = ShadowResolution.Medium;
+    private bool enableShadow = false;
+    private bool enableSoftShadow = false; // ★追加：影のぼかし（トグル）
+    private double ambientIntensity = 0.3;
 
-    /// <summary>半透明描画モード</summary>
     public TransparencyMode TransparencyMode
     {
         get => transparencyMode;
         set => Set(ref transparencyMode, value);
     }
 
-    /// <summary>標準モードの深度レイヤー数</summary>
     public StandardDepthLayerCount StandardDepthLayerCount
     {
         get => standardDepthLayerCount;
         set => Set(ref standardDepthLayerCount, value);
+    }
+
+    public ShadowResolution ShadowResolution
+    {
+        get => shadowResolution;
+        set => Set(ref shadowResolution, value);
+    }
+
+    public bool EnableShadow
+    {
+        get => enableShadow;
+        set => Set(ref enableShadow, value);
+    }
+
+    /// <summary>影のぼかし（Soft Shadow）を有効にするか</summary>
+    public bool EnableSoftShadow
+    {
+        get => enableSoftShadow;
+        set => Set(ref enableSoftShadow, value);
+    }
+
+    public double AmbientIntensity
+    {
+        get => ambientIntensity;
+        set => Set(ref ambientIntensity, value);
     }
 
     public override void Initialize() { }

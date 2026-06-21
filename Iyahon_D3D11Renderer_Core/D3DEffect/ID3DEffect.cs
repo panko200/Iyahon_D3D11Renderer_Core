@@ -48,6 +48,10 @@ public class D3DRenderContext
 
     /// <summary>YMM4のCamera行列（ビュー行列相当）。カメラ位置計算に使用。</summary>
     public Matrix4x4 CameraMatrix { get; set; } = Matrix4x4.Identity;
+
+    public bool IsShadowPass { get; set; } = false;
+    public Vector3 ShadowLightPos { get; set; } = Vector3.Zero;
+    public float ShadowLightRange { get; set; } = 0f;
 }
 
 /// <summary>

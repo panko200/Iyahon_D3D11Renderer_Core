@@ -1,10 +1,11 @@
 using HarmonyLib;
+using Iyahon_D3D11Renderer_Core.D3DEffect;
+using Iyahon_D3D11Renderer_Core.D3DEffect.Effects;
 using System;
 using System.Reflection;
 using System.Windows;
+using Iyahon_D3D11Renderer_Core;
 using YukkuriMovieMaker.Plugin;
-using Iyahon_D3D11Renderer_Core.D3DEffect;
-using Iyahon_D3D11Renderer_Core.D3DEffect.Effects;
 
 #nullable enable
 namespace Iyahon_D3D11Renderer_Core;
@@ -26,7 +27,7 @@ public class Iyahon_D3D11Renderer_CorePlugin : IPlugin
     {
         try
         {
-            var harmony = new Harmony("com.iyahon.d3d11renderercore");
+            var harmony = new Harmony("com.iyahon.Iyahon_D3D11Renderer_Core");
 
             // 属性ベースのパッチ (DepthSortJsonPatch, DepthSortClonePatch)
             harmony.PatchAll(Assembly.GetExecutingAssembly());
@@ -43,6 +44,13 @@ public class Iyahon_D3D11Renderer_CorePlugin : IPlugin
             D3DEffectRegistry.Register<SphereD3DEffect>();
             D3DEffectRegistry.Register<ExtrusionD3DEffect>();
             Log("D3Dエフェクト登録完了（立方体, 球, 押し出し）");
+
+            // ObjLoader連携の初期化（ObjLoaderがインストールされていなければ何もしない）
+            ObjLoaderBridge.Initialize();
+            if (ObjLoaderBridge.IsAvailable)
+                Log("ObjLoader連携: 有効（OBJモデルをD3D11空間に統合描画します）");
+            else
+                Log("ObjLoader連携: 無効（ObjLoaderプラグインが検出されませんでした）");
         }
         catch (Exception ex)
         {
@@ -57,6 +65,3 @@ public class Iyahon_D3D11Renderer_CorePlugin : IPlugin
     internal static void Log(string msg)
         => System.Diagnostics.Debug.WriteLine($"[Iyahon_D3D11Renderer_Core] {msg}");
 }
-
-
-

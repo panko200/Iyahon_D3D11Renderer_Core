@@ -1,9 +1,11 @@
 using Iyahon_D3D11Renderer_Core.D3DEffect;
+using Iyahon_D3D11Renderer_Core.Lighting;
 using System;
 using System.Collections.Generic;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using Iyahon_D3D11Renderer_Core.D3DEffect;
+using Iyahon_D3D11Renderer_Core.Lighting;
 using Vortice.Direct3D;
 using Vortice.Direct3D11;
 using Vortice.DXGI;
@@ -53,6 +55,8 @@ public sealed class ExtrusionD3DEffect : ID3DEffect
         public Vector4 SideColor;           // 16 -> 240
         public Vector3 CameraLocalPos;      // 12
         public float IsOrthographic;        // 4  -> 256
+        public Vector3 ShadowLightPos;
+        public float ShadowLightRange;
     }
 
     private bool _initialized;
@@ -65,6 +69,7 @@ public sealed class ExtrusionD3DEffect : ID3DEffect
     private ID3D11SamplerState? _sampler;
     private ID3D11RasterizerState? _rasterCullFront;
     private int _indexCount;
+    private ID3D11PixelShader? _psShadow;
 
     //2byte chars cause shader load errors - keep comments in ASCII only
     private const string ShaderSource = @"
@@ -84,7 +89,10 @@ cbuffer ExtrusionCb : register(b0)
     float4 SideColor;
     float3 CameraLocalPos;
     float IsOrthographic;
+    float3 ShadowLightPos;
+    float ShadowLightRange;
 };
+" + LightingShaderCode.HlslCode + @"
 
 struct VSInput  { float3 Pos : POSITION; float2 UV : TEXCOORD0; };
 struct PSInput  { float4 Pos : SV_POSITION; float2 UV : TEXCOORD0; float3 LocalPos : TEXCOORD1; };
@@ -100,13 +108,12 @@ SamplerState gSampler: register(s0);
 PSInput VS_Extrusion(VSInput input)
 {
     PSInput o;
-    // Scale -> World (WorldMatrix includes Camera + Perspective)
     float4 scaled = mul(float4(input.Pos, 1.0), ScaleMatrix);
-    float4 pos = mul(scaled, WorldMatrix);
+    float4 worldPos = mul(scaled, WorldMatrix);
 
     if (HalfWidth > 0.0)
     {
-        // Screen-space transform (DepthSortRenderer)
+        float4 pos = mul(worldPos, ViewProjMatrix);
         o.Pos.x =  pos.x / HalfWidth;
         o.Pos.y = -pos.y / HalfHeight;
         o.Pos.z = -pos.z / 200000.0 + 0.5 * pos.w;
@@ -114,8 +121,7 @@ PSInput VS_Extrusion(VSInput input)
     }
     else
     {
-        // ViewProjection transform (3D Preview)
-        o.Pos = mul(pos, ViewProjMatrix);
+        o.Pos = mul(worldPos, ViewProjMatrix);
     }
 
     o.UV = input.UV;
@@ -201,9 +207,9 @@ PSOutput PS_Extrusion(PSInput input)
 
     if (HalfWidth > 0.0)
     {
-        // Screen-space depth (DepthSortRenderer)
-        float clipZ = -worldHit.z / 200000.0 + 0.5 * worldHit.w;
-        float clipW = worldHit.w;
+        float4 clipHit = mul(worldHit, ViewProjMatrix);
+        float clipZ = -clipHit.z / 200000.0 + 0.5 * clipHit.w;
+        float clipW = clipHit.w;
         output.Depth = saturate(clipZ / clipW);
     }
     else
@@ -236,10 +242,11 @@ PSOutput PS_Extrusion(PSInput input)
         normal = normalize(float3(aL - aR, aD - aU, 0.005));
     }
 
+    float4 finalCol;
     if (isFace)
     {
         float4 texColor = gTex.SampleLevel(gSampler, hitUV, 0);
-        output.Color = float4(texColor.rgb, texColor.a * Opacity);
+        finalCol = float4(texColor.rgb, texColor.a * Opacity);
     }
     else
     {
@@ -263,7 +270,116 @@ PSOutput PS_Extrusion(PSInput input)
         }
 
         col *= shade;
-        output.Color = float4(col, 1.0 * Opacity);
+        finalCol = float4(col, 1.0 * Opacity);
+    }
+
+    if (UseSimpleLight < 0.5)
+    {
+        float3 lgtVal = CalcDynamicLgtEff(normal, worldHit.xyz);
+        finalCol.rgb *= lgtVal;
+    }
+    else if (isFace)
+    {
+        float lgtVal = CalcSimpleLgtEff(normal, LightIntensity);
+        finalCol.rgb *= lgtVal;
+    }
+
+    output.Color = finalCol;
+    return output;
+}
+
+PSOutput PS_Extrusion_Shadow(PSInput input)
+{
+    PSOutput output;
+    output.Color = float4(0, 0, 0, 0);
+    output.Depth = input.Pos.z;
+
+    float3 ro, rd;
+    if (IsOrthographic > 0.5)
+    {
+        rd = normalize(CameraLocalPos);
+        ro = input.LocalPos - rd * 2.0;
+    }
+    else
+    {
+        ro = CameraLocalPos;
+        rd = normalize(input.LocalPos - CameraLocalPos);
+    }
+
+    float3 invDir = 1.0 / rd;
+    float3 t0 = (-0.5 - ro) * invDir;
+    float3 t1 = ( 0.5 - ro) * invDir;
+
+    float3 tmin = min(t0, t1);
+    float3 tmax = max(t0, t1);
+
+    float tNear = max(max(tmin.x, tmin.y), tmin.z);
+    float tFar  = min(min(tmax.x, tmax.y), tmax.z);
+
+    if (tNear > tFar || tFar < 0.0) discard;
+
+    float noise = frac(sin(dot(input.Pos.xy, float2(12.9898, 78.233))) * 43758.5453);
+
+    int numSteps = 128;
+    float stepSize = (tFar - tNear) / numSteps;
+    float t = max(tNear, 0.0) + stepSize * noise;
+
+    float hitT = -1.0;
+    float3 hitPos = float3(0, 0, 0);
+
+    for (int i = 0; i < numSteps; i++)
+    {
+        float3 pos = ro + rd * t;
+        float2 uv = float2(pos.x + 0.5, pos.y + 0.5);
+
+        float a = gTex.SampleLevel(gSampler, uv, 0).a;
+        if (a > AlphaThreshold)
+        {
+            float tLow = max(tNear, t - stepSize);
+            float tHigh = t;
+            for (int j = 0; j < 10; j++)
+            {
+                float tMid = (tLow + tHigh) * 0.5;
+                float3 mPos = ro + rd * tMid;
+                float2 mUV = float2(mPos.x + 0.5, mPos.y + 0.5);
+                float mA = gTex.SampleLevel(gSampler, mUV, 0).a;
+                if (mA > AlphaThreshold) tHigh = tMid;
+                else tLow = tMid;
+            }
+            hitT = tHigh;
+            hitPos = ro + rd * hitT;
+            break;
+        }
+        t += stepSize;
+    }
+
+    if (hitT < 0.0) discard;
+
+    float4 scaledHit = mul(float4(hitPos, 1.0), ScaleMatrix);
+    float4 worldHit = mul(scaledHit, WorldMatrix);
+
+    if (HalfWidth > 0.0)
+    {
+        float4 clipHit = mul(worldHit, ViewProjMatrix);
+        float clipZ = -clipHit.z / 200000.0 + 0.5 * clipHit.w;
+        float clipW = clipHit.w;
+        output.Depth = saturate(clipZ / clipW);
+    }
+    else
+    {
+        float4 clipHit = mul(worldHit, ViewProjMatrix);
+        output.Depth = saturate(clipHit.z / clipHit.w);
+    }
+
+    if (ShadowLightRange > 0.1)
+    {
+        float dist = length(worldHit.xyz - ShadowLightPos);
+        float normDist = dist / max(ShadowLightRange, 1.0);
+        output.Color = float4(normDist, 0.0, 0.0, 1.0);
+    }
+    else
+    {
+        output.Color = float4(output.Depth, 0.0, 0.0, 1.0);
     }
 
     return output;
@@ -297,6 +413,13 @@ PSOutput PS_Extrusion(PSInput input)
                 "ps_5_0", Vortice.D3DCompiler.ShaderFlags.None, Vortice.D3DCompiler.EffectFlags.None);
             _ps = device.CreatePixelShader(psBlob);
             psBlob.Dispose();
+
+            var psShadowBlob = Vortice.D3DCompiler.Compiler.Compile(
+                ShaderSource, "PS_Extrusion_Shadow", "extrusion_shader",
+                Array.Empty<ShaderMacro>(), null,
+                "ps_5_0", Vortice.D3DCompiler.ShaderFlags.None, Vortice.D3DCompiler.EffectFlags.None);
+            _psShadow = device.CreatePixelShader(psShadowBlob);
+            psShadowBlob.Dispose();
 
             _cbBuffer = device.CreateBuffer(new BufferDescription(
                 Marshal.SizeOf<ExtrusionCb>(), BindFlags.ConstantBuffer));
@@ -388,17 +511,15 @@ PSOutput PS_Extrusion(PSInput input)
                        ID3D11ShaderResourceView inputSrv,
                        D3DRenderContext renderContext)
     {
-        if (!_initialized || _vs == null || _ps == null) return;
+        if (!_initialized || _vs == null || _ps == null || _psShadow == null) return;
 
         var scaleMatrix = Matrix4x4.CreateScale(1f, 1f, Thickness);
 
-        // Compute CameraLocalPos based on rendering mode
         Vector3 cameraLocalPos;
         float isOrthographic = 0f;
 
         if (renderContext.HalfScreenWidth > 0)
         {
-            // Normal mode (DepthSortRenderer) - compute from CameraMatrix + d2dProj
             var cam = renderContext.CameraMatrix;
             var d2dProj = new Matrix4x4(
                 1f, 0f, 0f, 0f,
@@ -408,7 +529,6 @@ PSOutput PS_Extrusion(PSInput input)
             );
 
             var combined = cam * d2dProj;
-            // Check if W is independent of X, Y, and Z (true orthographic)
             if (Math.Abs(combined.M14) < 0.00001f &&
                 Math.Abs(combined.M24) < 0.00001f &&
                 Math.Abs(combined.M34) < 0.00001f)
@@ -416,10 +536,9 @@ PSOutput PS_Extrusion(PSInput input)
                 isOrthographic = 1f;
             }
 
-            Matrix4x4.Invert(d2dProj, out var invD2dProj);
             Matrix4x4.Invert(cam, out var invCam);
 
-            var modelMatrix = renderContext.WorldMatrix * invD2dProj * invCam;
+            var modelMatrix = renderContext.WorldMatrix;
             var effectiveModel = scaleMatrix * modelMatrix;
             Matrix4x4.Invert(effectiveModel, out var invEffectiveModel);
 
@@ -436,7 +555,6 @@ PSOutput PS_Extrusion(PSInput input)
         }
         else
         {
-            // ViewProj mode (3D Preview) - use CameraWorldPosition from context
             var viewProj = renderContext.ViewProjectionMatrix;
             if (Math.Abs(viewProj.M14) < 0.00001f &&
                 Math.Abs(viewProj.M24) < 0.00001f &&
@@ -479,8 +597,9 @@ PSOutput PS_Extrusion(PSInput input)
             SideColor = SideColor,
             CameraLocalPos = cameraLocalPos,
             IsOrthographic = isOrthographic,
+            ShadowLightPos = renderContext.ShadowLightPos,
+            ShadowLightRange = renderContext.ShadowLightRange,
         };
-
         ctx.UpdateSubresource(ref cb, _cbBuffer!);
 
         ctx.RSSetState(_rasterCullFront);
@@ -491,7 +610,7 @@ PSOutput PS_Extrusion(PSInput input)
         ctx.IASetPrimitiveTopology(PrimitiveTopology.TriangleList);
 
         ctx.VSSetShader(_vs);
-        ctx.PSSetShader(_ps);
+        ctx.PSSetShader(renderContext.IsShadowPass ? _psShadow : _ps); // ★修正を反映
         ctx.VSSetConstantBuffer(0, _cbBuffer);
         ctx.PSSetConstantBuffer(0, _cbBuffer);
         ctx.PSSetShaderResource(0, inputSrv);
@@ -507,6 +626,7 @@ PSOutput PS_Extrusion(PSInput input)
     {
         _vs?.Dispose();
         _ps?.Dispose();
+        _psShadow?.Dispose();
         _inputLayout?.Dispose();
         _vertexBuffer?.Dispose();
         _indexBuffer?.Dispose();

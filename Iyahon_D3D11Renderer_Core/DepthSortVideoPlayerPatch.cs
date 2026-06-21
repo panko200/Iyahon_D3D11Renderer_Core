@@ -1,6 +1,8 @@
+// --- START OF FILE DepthSortVideoPlayerPatch.cs (修正版) ---
+
 using HarmonyLib;
 using System;
-using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 
@@ -18,7 +20,8 @@ internal static class DepthSortVideoPlayerPatch
         _playerType?.GetField("isTimelineChanged",
             BindingFlags.Instance | BindingFlags.NonPublic);
 
-    private static readonly ConcurrentBag<WeakReference> _instances = new();
+    private static readonly List<WeakReference> _instances = new();
+    private static readonly object _lock = new();
 
     internal static void Apply(Harmony harmony)
     {
@@ -36,20 +39,32 @@ internal static class DepthSortVideoPlayerPatch
     }
 
     private static void CtorPostfix(object __instance)
-        => _instances.Add(new WeakReference(__instance));
+    {
+        lock (_lock)
+        {
+            // 新規プレイヤー登録時に死んだWeakReferenceを掃除する
+            _instances.RemoveAll(wr => !wr.IsAlive);
+            _instances.Add(new WeakReference(__instance));
+        }
+    }
 
     internal static void SetTimelineChanged()
     {
         if (_isTimelineChangedField == null) return;
-        foreach (var wr in _instances)
+        lock (_lock)
         {
-            var instance = wr.Target;
-            if (instance == null) continue;
-            try { _isTimelineChangedField.SetValue(instance, true); }
-            catch { }
+            foreach (var wr in _instances)
+            {
+                var instance = wr.Target;
+                if (instance == null) continue;
+                try { _isTimelineChangedField.SetValue(instance, true); }
+                catch { }
+            }
         }
     }
 
     private static void Log(string msg)
         => System.Diagnostics.Debug.WriteLine($"[Iyahon_D3D11Renderer_Core] DepthSortVideoPlayerPatch: {msg}");
 }
+
+// --- END OF FILE DepthSortVideoPlayerPatch.cs ---

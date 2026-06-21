@@ -1,3 +1,5 @@
+// --- START OF FILE D2DD3DBridge.cs (修正版) ---
+
 using System;
 using System.Numerics;
 using Vortice.Direct2D1;
@@ -14,8 +16,12 @@ internal static class D2DD3DBridge
     public static (ID3D11Texture2D texture, ID2D1Bitmap1 bitmap)? CreateSharedTexture(
         IGraphicsDevicesAndContext devices, int width, int height)
     {
+        ID3D11Texture2D? texture = null;
         try
         {
+            if (devices == null || devices.D3D == null || devices.D3D.Device == null) return null;
+            if (devices.D3D.Device.NativePointer == IntPtr.Zero) return null;
+
             var texDesc = new Texture2DDescription
             {
                 Width = width,
@@ -29,10 +35,9 @@ internal static class D2DD3DBridge
                 MiscFlags = ResourceOptionFlags.Shared,
             };
 
-            var texture = devices.D3D.Device.CreateTexture2D(texDesc);
+            texture = devices.D3D.Device.CreateTexture2D(texDesc);
             using var surface = texture.QueryInterface<IDXGISurface>();
 
-            // ★ 96固定ではなく、YMM4の現在のDPIを取得して設定する
             float dpiX = devices.DeviceContext.Dpi.Width;
             float dpiY = devices.DeviceContext.Dpi.Height;
 
@@ -44,17 +49,29 @@ internal static class D2DD3DBridge
             var bitmap = devices.DeviceContext.CreateBitmapFromDxgiSurface(surface, bitmapProps);
             return (texture, bitmap);
         }
-        catch { return null; }
+        catch
+        {
+            // 失敗した場合は確実に作成済みのD3Dテクスチャを解放してリークを防ぐ
+            texture?.Dispose();
+            return null;
+        }
     }
 
     public static ID3D11Texture2D? BakeToD3DTexture(
         ID2D1Image image, IGraphicsDevicesAndContext devices, int width, int height, float offsetX = 0f, float offsetY = 0f)
     {
+        ID3D11Texture2D? texture = null;
+        ID2D1Bitmap1? bitmap = null;
         try
         {
+            if (devices == null || devices.D3D == null || devices.D3D.Device == null) return null;
+            if (devices.D3D.Device.NativePointer == IntPtr.Zero) return null;
+            if (devices.DeviceContext == null || devices.DeviceContext.NativePointer == IntPtr.Zero) return null;
+
             var result = CreateSharedTexture(devices, width, height);
             if (result == null) return null;
-            var (texture, bitmap) = result.Value;
+            texture = result.Value.texture;
+            bitmap = result.Value.bitmap;
 
             var dc = devices.DeviceContext;
             var prevTarget = dc.Target;
@@ -62,29 +79,39 @@ internal static class D2DD3DBridge
             dc.Target = bitmap;
             dc.BeginDraw();
             dc.Clear(new Color4(0f, 0f, 0f, 0f));
-            // 標準モード: D2D AA 有効なので Linear で滑らかに
-            // OIT モード: D2D AA 無効 (Aliased) なので NearestNeighbor で点サンプリング
+
             var interpMode = D3D11RendererSettings.Default.TransparencyMode == TransparencyMode.Standard
                 ? InterpolationMode.Linear
                 : InterpolationMode.NearestNeighbor;
             dc.DrawImage(image, new Vector2(offsetX, offsetY), null, interpMode, CompositeMode.SourceOver);
 
-            ulong tag1, tag2;
-            dc.Flush(out tag1, out tag2);
+            dc.Flush(out _, out _);
             dc.EndDraw();
 
             dc.Target = prevTarget;
-            bitmap.Dispose();
 
             return texture;
         }
-        catch { return null; }
+        catch
+        {
+            // 描画中に何らかの例外（デバイスロスト等）が発生した場合はテクスチャを破棄
+            texture?.Dispose();
+            return null;
+        }
+        finally
+        {
+            // Bitmapは失敗/成功に関わらずFinallyで安全にDispose
+            bitmap?.Dispose();
+        }
     }
 
     public static ID3D11ShaderResourceView? CreateSrv(ID3D11Texture2D texture, ID3D11Device d3dDevice)
     {
         try
         {
+            if (d3dDevice == null || d3dDevice.NativePointer == IntPtr.Zero) return null;
+            if (texture == null || texture.NativePointer == IntPtr.Zero) return null;
+
             var srvDesc = new ShaderResourceViewDescription
             {
                 Format = Format.B8G8R8A8_UNorm,
@@ -100,10 +127,12 @@ internal static class D2DD3DBridge
     {
         try
         {
+            if (devices == null || devices.DeviceContext == null || devices.DeviceContext.NativePointer == IntPtr.Zero) return null;
+            if (renderTexture == null || renderTexture.NativePointer == IntPtr.Zero) return null;
+
             using var surface = renderTexture.QueryInterface<IDXGISurface>();
             if (surface == null) return null;
 
-            // ★ ここも YMM4の現在のDPIに合わせる
             float dpiX = devices.DeviceContext.Dpi.Width;
             float dpiY = devices.DeviceContext.Dpi.Height;
 
@@ -116,3 +145,5 @@ internal static class D2DD3DBridge
         catch { return null; }
     }
 }
+
+// --- END OF FILE D2DD3DBridge.cs ---

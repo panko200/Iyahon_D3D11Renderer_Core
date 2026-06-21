@@ -1,20 +1,77 @@
-using Iyahon_D3D11Renderer_Core;
-using Iyahon_D3D11Renderer_Core.D3DEffect;
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
 using System.Runtime.InteropServices;
-using Iyahon_D3D11Renderer_Core.D3DEffect;
+using Vortice.Direct2D1;
 using Vortice.Direct3D;
 using Vortice.Direct3D11;
 using Vortice.DXGI;
 using Vortice.Mathematics;
 using YukkuriMovieMaker.Commons;
 using YukkuriMovieMaker.Player.Video;
+using Iyahon_D3D11Renderer_Core.D3DEffect;
+using Iyahon_D3D11Renderer_Core.Lighting;
+using BlendOperation = Vortice.Direct3D11.BlendOperation;
+using Blend = Vortice.Direct3D11.Blend;
+using BlendDescription = Vortice.Direct3D11.BlendDescription;
+using Filter = Vortice.Direct3D11.Filter;
+using FillMode = Vortice.Direct3D11.FillMode;
+using InputElementDescription = Vortice.Direct3D11.InputElementDescription;
 
 #nullable enable
 namespace Iyahon_D3D11Renderer_Core;
+
+internal static class DepthSortRendererRegistry
+{
+    private static readonly List<WeakReference<DepthSortRenderer>> _activeRenderers = new();
+    private static readonly object _lock = new();
+
+    static DepthSortRendererRegistry()
+    {
+        AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
+    }
+
+    public static void Register(DepthSortRenderer renderer)
+    {
+        lock (_lock)
+        {
+            _activeRenderers.RemoveAll(wr => !wr.TryGetTarget(out _));
+            _activeRenderers.Add(new WeakReference<DepthSortRenderer>(renderer));
+        }
+    }
+
+    private static void OnProcessExit(object? sender, EventArgs e)
+    {
+        lock (_lock)
+        {
+            foreach (var wr in _activeRenderers)
+            {
+                if (wr.TryGetTarget(out var renderer))
+                {
+                    try
+                    {
+                        renderer.Dispose();
+                    }
+                    catch { }
+                }
+            }
+            _activeRenderers.Clear();
+        }
+    }
+}
+
+internal sealed class CachedEffect
+{
+    public ID3DEffect Effect { get; }
+    public DateTime LastSeen { get; set; }
+
+    public CachedEffect(ID3DEffect effect)
+    {
+        Effect = effect;
+        LastSeen = DateTime.UtcNow;
+    }
+}
 
 internal sealed class DepthSortRenderer : IDisposable
 {
@@ -28,67 +85,74 @@ internal sealed class DepthSortRenderer : IDisposable
     [StructLayout(LayoutKind.Sequential)]
     private struct CbPerObject
     {
-        public Matrix4x4 WorldMatrix;   // 64 bytes
-        public float HalfWidth;         // 4
-        public float HalfHeight;        // 4
-        public float Opacity;           // 4
-        public float AlphaThreshold;    // 4  → 合計 80 bytes (16 の倍数 OK)
+        public Matrix4x4 WorldMatrix;
+        public Matrix4x4 ViewProjMatrix;
+        public float HalfWidth;
+        public float HalfHeight;
+        public float Opacity;
+        public float AlphaThreshold;
+        public Vector3 ShadowLightPos;
+        public float ShadowLightRange;
     }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct CbFxaa
     {
-        public float RcpFrameX;  // 1.0 / width
-        public float RcpFrameY;  // 1.0 / height
+        public float RcpFrameX;
+        public float RcpFrameY;
         public float _pad0;
         public float _pad1;
     }
 
-    private readonly IGraphicsDevicesAndContext _devices;
-    private readonly ID3D11Device _d3d;
-    private readonly ID3D11DeviceContext _ctx;
+    private const int MAX_SHADOWS = 8;
 
-    // ── 最終出力 ──
+    private IntPtr _d3dDevicePointer = IntPtr.Zero;
+    private IntPtr _d3dContextPointer = IntPtr.Zero;
+
     private ID3D11RenderTargetView? _rtv;
     private ID3D11Texture2D? _renderTarget;
+    private ID2D1Bitmap1? _renderTargetBitmap;
 
-    // ── 深度バッファ ──
     private ID3D11DepthStencilView? _dsv;
     private ID3D11Texture2D? _depthStencil;
 
-    // ── OIT: Accumulation バッファ (R16G16B16A16_Float) ──
     private ID3D11Texture2D? _accumTexture;
     private ID3D11RenderTargetView? _accumRtv;
     private ID3D11ShaderResourceView? _accumSrv;
 
-    // ── OIT: Revealage バッファ (R16_Float) ──
     private ID3D11Texture2D? _revealTexture;
     private ID3D11RenderTargetView? _revealRtv;
     private ID3D11ShaderResourceView? _revealSrv;
 
-    // ── シェーダ/パイプライン ──
     private ID3D11VertexShader? _vs;
-    private ID3D11PixelShader? _psOpaque;           // パス1: 不透明
-    private ID3D11PixelShader? _psOIT;              // パス2: OIT 蓄積
-    private ID3D11PixelShader? _psSemiTrans;        // 標準モード: 半透明
-    private ID3D11VertexShader? _resolveVs;         // パス3: 解決
-    private ID3D11PixelShader? _resolvePs;          // パス3: 解決
+    private ID3D11PixelShader? _psOpaque;
+    private ID3D11PixelShader? _psOIT;
+    private ID3D11PixelShader? _psSemiTrans;
+    private ID3D11PixelShader? _psShadowCube;
+    private ID3D11VertexShader? _resolveVs;
+    private ID3D11PixelShader? _resolvePs;
     private ID3D11InputLayout? _inputLayout;
     private ID3D11InputLayout? _resolveInputLayout;
     private ID3D11Buffer? _vertexBuffer;
     private ID3D11Buffer? _resolveVertexBuffer;
     private ID3D11Buffer? _cbPerObject;
+    private ID3D11Buffer? _cbLighting;
     private ID3D11SamplerState? _samplerPoint;
     private ID3D11SamplerState? _samplerLinear;
 
-    // ── ブレンドステート ──
-    private ID3D11BlendState? _blendStateOpaque;     // パス1: 通常プレマルα
-    private ID3D11BlendState? _blendStateNoColor;    // 標準モード: 深度プリパス用（カラー書き込みなし）
-    private ID3D11BlendState? _blendStateOIT;        // パス2: RT0加算, RT1乗算
-    private ID3D11BlendState? _blendStateResolve;    // パス3: プレマルα合成
-    private ID3D11BlendState? _blendStateFxaa;       // パス4: 上書き
+    // 影シャドウアトラス（単一巨大バッファ）
+    private ID3D11Texture2D? _shadowAtlasTex;
+    private ID3D11RenderTargetView? _shadowAtlasRtv;
+    private ID3D11ShaderResourceView? _shadowAtlasSrv;
+    private ID3D11Texture2D? _shadowAtlasDepthTex;
+    private ID3D11DepthStencilView? _shadowAtlasDsv;
 
-    // ── FXAA 中間バッファ ──
+    private ID3D11BlendState? _blendStateOpaque;
+    private ID3D11BlendState? _blendStateNoColor;
+    private ID3D11BlendState? _blendStateOIT;
+    private ID3D11BlendState? _blendStateResolve;
+    private ID3D11BlendState? _blendStateFxaa;
+
     private ID3D11Texture2D? _fxaaTexture;
     private ID3D11RenderTargetView? _fxaaRtv;
     private ID3D11ShaderResourceView? _fxaaSrv;
@@ -96,43 +160,52 @@ internal sealed class DepthSortRenderer : IDisposable
     private ID3D11VertexShader? _vsFxaa;
     private ID3D11Buffer? _cbFxaa;
 
-    // ── デプスステンシルステート ──
-    private ID3D11DepthStencilState? _depthStateOpaque;   // パス1: depth ON, write ON
-    private ID3D11DepthStencilState? _depthStateOIT;      // パス2: depth ON, write OFF
-    private ID3D11DepthStencilState? _depthStateSemiTrans; // 標準モード半透明: 前面深度プリパス
-    private ID3D11DepthStencilState? _depthStateSemiBack;  // 標準モード半透明: 背面色
-    private ID3D11DepthStencilState? _depthStateSemiFront; // 標準モード半透明: 前面色
-    private ID3D11DepthStencilState? _depthStateDisabled; // パス3: depth OFF
+    private ID3D11DepthStencilState? _depthStateOpaque;
+    private ID3D11DepthStencilState? _depthStateOIT;
+    private ID3D11DepthStencilState? _depthStateSemiTrans;
+    private ID3D11DepthStencilState? _depthStateSemiBack;
+    private ID3D11DepthStencilState? _depthStateSemiFront;
+    private ID3D11DepthStencilState? _depthStateDisabled;
 
     private ID3D11RasterizerState? _rasterizerState;
-
     private int _width;
     private int _height;
     private bool _initialized;
     private bool _disposed;
+    private int _currentShadowResolution = 0;
 
-    // ─── D3Dエフェクトインスタンスキャッシュ（IVideoItem ごと） ───
-    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<YukkuriMovieMaker.Project.Items.IVideoItem, ID3DEffect> _d3dEffects = new();
-    private readonly List<ID3DEffect> _allCreatedEffects = new();
+    private System.Runtime.CompilerServices.ConditionalWeakTable<YukkuriMovieMaker.Project.Items.IVideoItem, CachedEffect> _d3dEffects = new();
+
+    private ObjModelRenderer? _objModelRenderer;
+
+    public int Width => _width;
+    public int Height => _height;
+    public IntPtr DevicePointer => _d3dDevicePointer;
+    public ID2D1Bitmap1? RenderTargetBitmap => _renderTargetBitmap;
+
+    public DepthSortRenderer()
+    {
+        DepthSortRendererRegistry.Register(this);
+    }
 
     public ID3DEffect? GetOrCreateEffect(YukkuriMovieMaker.Project.Items.IVideoItem item, string effectId)
     {
         if (_d3dEffects.TryGetValue(item, out var cached))
         {
+            cached.LastSeen = DateTime.UtcNow;
             var info = Iyahon_D3D11Renderer_Core.D3DEffect.D3DEffectRegistry.GetEffectInfo(effectId);
-            if (info != null && cached.GetType() == info.EffectType)
+            if (info != null && cached.Effect.GetType() == info.EffectType)
             {
-                return cached;
+                return cached.Effect;
             }
             else
             {
-                cached.Dispose();
+                cached.Effect.Dispose();
                 _d3dEffects.Remove(item);
                 var newEffect = Iyahon_D3D11Renderer_Core.D3DEffect.D3DEffectRegistry.CreateEffect(effectId);
                 if (newEffect != null)
                 {
-                    _d3dEffects.Add(item, newEffect);
-                    _allCreatedEffects.Add(newEffect);
+                    _d3dEffects.Add(item, new CachedEffect(newEffect));
                 }
                 return newEffect;
             }
@@ -142,30 +215,51 @@ internal sealed class DepthSortRenderer : IDisposable
             var newEffect = Iyahon_D3D11Renderer_Core.D3DEffect.D3DEffectRegistry.CreateEffect(effectId);
             if (newEffect != null)
             {
-                _d3dEffects.Add(item, newEffect);
-                _allCreatedEffects.Add(newEffect);
+                _d3dEffects.Add(item, new CachedEffect(newEffect));
             }
             return newEffect;
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    // シェーダソース
-    // ═══════════════════════════════════════════════════════════════
+    private void PruneEffects()
+    {
+        var now = DateTime.UtcNow;
+        var toRemove = new List<YukkuriMovieMaker.Project.Items.IVideoItem>();
 
-    // パス1/パス2 共通の頂点シェーダ + パス1用ピクセルシェーダ + パス2用OITピクセルシェーダ
+        foreach (var pair in _d3dEffects)
+        {
+            if ((now - pair.Value.LastSeen).TotalSeconds > 5.0)
+            {
+                toRemove.Add(pair.Key);
+            }
+        }
+
+        foreach (var key in toRemove)
+        {
+            if (_d3dEffects.TryGetValue(key, out var cached))
+            {
+                cached.Effect.Dispose();
+                _d3dEffects.Remove(key);
+            }
+        }
+    }
+
     private const string MainShaderSource = @"
 cbuffer CbPerObject : register(b0)
 {
     row_major float4x4 WorldMatrix;
+    row_major float4x4 ViewProjMatrix;
     float HalfWidth;
     float HalfHeight;
     float Opacity;
     float AlphaThreshold;
+    float3 ShadowLightPos;
+    float ShadowLightRange;
 };
+" + LightingShaderCode.HlslCode + @"
 
 struct VSInput  { float3 Pos : POSITION; float2 UV : TEXCOORD0; };
-struct PSInput  { float4 Pos : SV_POSITION; float2 UV : TEXCOORD0; float Op : TEXCOORD1; };
+struct PSInput  { float4 Pos : SV_POSITION; float2 UV : TEXCOORD0; float3 Norm : TEXCOORD1; float Op : TEXCOORD2; float3 WorldPos : TEXCOORD3; };
 
 Texture2D    gTex    : register(t0);
 SamplerState gSampler: register(s0);
@@ -173,24 +267,72 @@ SamplerState gSampler: register(s0);
 PSInput VS(VSInput input)
 {
     PSInput o;
-    float4 pos = mul(float4(input.Pos, 1.0), WorldMatrix);
+    float4 worldPos = mul(float4(input.Pos, 1.0), WorldMatrix);
 
-    o.Pos.x =  pos.x / HalfWidth;
-    o.Pos.y = -pos.y / HalfHeight;
-    o.Pos.z = -pos.z / 200000.0 + 0.5 * pos.w;
-    o.Pos.w =  pos.w;
+    if (HalfWidth > 0.0)
+    {
+        float4 pos = mul(worldPos, ViewProjMatrix);
+        o.Pos.x =  pos.x / HalfWidth;
+        o.Pos.y = -pos.y / HalfHeight;
+        o.Pos.z = -pos.z / 200000.0 + 0.5 * pos.w;
+        o.Pos.w =  pos.w;
+    }
+    else
+    {
+        o.Pos = mul(worldPos, ViewProjMatrix);
+    }
 
     o.UV = input.UV;
+    
+    float3 localNorm = float3(0.0, 0.0, -1.0);
+    o.Norm = normalize(mul(float4(localNorm, 0.0), WorldMatrix).xyz);
     o.Op = Opacity;
+    o.WorldPos = worldPos.xyz;
     return o;
 }
 
-float4 PS_Opaque(PSInput input) : SV_Target
+float4 PS_Opaque(PSInput input, bool isFront : SV_IsFrontFace) : SV_Target
 {
     float4 c = gTex.Sample(gSampler, input.UV);
     c *= input.Op;
     clip(c.a - AlphaThreshold);
+
+    float3 n = normalize(input.Norm);
+    if (isFront)
+    {
+        n = -n;
+    }
+
+    if (UseSimpleLight > 0.5)
+    {
+        float lgtVal = CalcSimpleLgtEff(n, 0.5);
+        c.rgb *= lgtVal;
+    }
+    else
+    {
+        float3 lgtVal = CalcDynamicLgtEff(n, input.WorldPos);
+        c.rgb *= lgtVal;
+    }
+
     return c;
+}
+
+float4 PS_ShadowCube(PSInput input) : SV_Target
+{
+    float4 c = gTex.Sample(gSampler, input.UV);
+    c *= input.Op;
+    clip(c.a - AlphaThreshold);
+
+    if (ShadowLightRange > 0.1)
+    {
+        float dist = length(input.WorldPos - ShadowLightPos);
+        float normDist = dist / max(ShadowLightRange, 1.0);
+        return float4(normDist, 0.0, 0.0, 1.0);
+    }
+    else
+    {
+        return float4(input.Pos.z, 0.0, 0.0, 1.0);
+    }
 }
 
 struct OITOutput
@@ -199,13 +341,30 @@ struct OITOutput
     float  Reveal : SV_Target1;
 };
 
-OITOutput PS_OIT(PSInput input)
+OITOutput PS_OIT(PSInput input, bool isFront : SV_IsFrontFace)
 {
     float4 c = gTex.Sample(gSampler, input.UV);
     c *= input.Op;
 
     clip(c.a - 0.004);
     clip(0.999 - c.a);
+
+    float3 n = normalize(input.Norm);
+    if (isFront)
+    {
+        n = -n;
+    }
+
+    if (UseSimpleLight > 0.5)
+    {
+        float lgtVal = CalcSimpleLgtEff(n, 0.5);
+        c.rgb *= lgtVal;
+    }
+    else
+    {
+        float3 lgtVal = CalcDynamicLgtEff(n, input.WorldPos);
+        c.rgb *= lgtVal;
+    }
 
     float z = input.Pos.z;
     float weight = clamp(
@@ -220,17 +379,34 @@ OITOutput PS_OIT(PSInput input)
     return o;
 }
 
-float4 PS_SemiTrans(PSInput input) : SV_Target
+float4 PS_SemiTrans(PSInput input, bool isFront : SV_IsFrontFace) : SV_Target
 {
     float4 c = gTex.Sample(gSampler, input.UV);
     c *= input.Op;
     clip(c.a - 0.004);
     clip(0.999 - c.a);
+
+    float3 n = normalize(input.Norm);
+    if (isFront)
+    {
+        n = -n;
+    }
+
+    if (UseSimpleLight > 0.5)
+    {
+        float lgtVal = CalcSimpleLgtEff(n, 0.5);
+        c.rgb *= lgtVal;
+    }
+    else
+    {
+        float3 lgtVal = CalcDynamicLgtEff(n, input.WorldPos);
+        c.rgb *= lgtVal;
+    }
+
     return c;
 }
 ";
 
-    // パス3: 解決シェーダ (フルスクリーンクワッド)
     private const string ResolveShaderSource = @"
 struct VSInput  { float3 Pos : POSITION; float2 UV : TEXCOORD0; };
 struct PSInput  { float4 Pos : SV_POSITION; float2 UV : TEXCOORD0; };
@@ -256,23 +432,39 @@ float4 PS_Resolve(PSInput input) : SV_Target
         return float4(0, 0, 0, 0);
 
     float3 color = accum.rgb / max(accum.a, 1e-5);
-
     float alpha = 1.0 - reveal;
 
     return float4(color * alpha, alpha);
 }
 ";
 
-    public DepthSortRenderer(IGraphicsDevicesAndContext devices)
+    public bool Initialize(IGraphicsDevicesAndContext devices, int width, int height)
     {
-        _devices = devices;
-        _d3d = devices.D3D.Device;
-        _ctx = devices.D3D.DeviceContext;
-    }
+        if (devices == null || devices.D3D == null || devices.D3D.Device == null) return false;
 
-    public bool Initialize(int width, int height)
-    {
-        if (_initialized && _width == width && _height == height) return true;
+        var currentDevice = devices.D3D.Device;
+        if (currentDevice.NativePointer == IntPtr.Zero) return false;
+
+        if (devices.D3D.DeviceContext == null) return false;
+
+        var currentContext = devices.D3D.DeviceContext;
+        if (currentContext.NativePointer == IntPtr.Zero) return false;
+
+        var settings = D3D11RendererSettings.Default;
+        int targetRes = (int)settings.ShadowResolution;
+
+        if (_d3dDevicePointer == IntPtr.Zero || _d3dDevicePointer != currentDevice.NativePointer || _d3dContextPointer != currentContext.NativePointer)
+        {
+            Iyahon_D3D11Renderer_CorePlugin.Log("D3D11デバイス変更を検出。リソースを再生成します。");
+            DisposeTargets();
+            DisposeResources();
+
+            _d3dDevicePointer = currentDevice.NativePointer;
+            _d3dContextPointer = currentContext.NativePointer;
+            _initialized = false;
+        }
+
+        if (_initialized && _width == width && _height == height && _currentShadowResolution == targetRes) return true;
 
         DisposeTargets();
         _width = width;
@@ -280,8 +472,7 @@ float4 PS_Resolve(PSInput input) : SV_Target
 
         try
         {
-            // ── 最終レンダーターゲット (B8G8R8A8_UNorm) ──
-            _renderTarget = _d3d.CreateTexture2D(new Texture2DDescription
+            _renderTarget = currentDevice.CreateTexture2D(new Texture2DDescription
             {
                 Width = width,
                 Height = height,
@@ -293,10 +484,9 @@ float4 PS_Resolve(PSInput input) : SV_Target
                 BindFlags = BindFlags.RenderTarget | BindFlags.ShaderResource,
                 MiscFlags = ResourceOptionFlags.Shared,
             });
-            _rtv = _d3d.CreateRenderTargetView(_renderTarget);
+            _rtv = currentDevice.CreateRenderTargetView(_renderTarget);
 
-            // ── 深度バッファ ──
-            _depthStencil = _d3d.CreateTexture2D(new Texture2DDescription
+            _depthStencil = currentDevice.CreateTexture2D(new Texture2DDescription
             {
                 Width = width,
                 Height = height,
@@ -307,10 +497,9 @@ float4 PS_Resolve(PSInput input) : SV_Target
                 Usage = ResourceUsage.Default,
                 BindFlags = BindFlags.DepthStencil,
             });
-            _dsv = _d3d.CreateDepthStencilView(_depthStencil);
+            _dsv = currentDevice.CreateDepthStencilView(_depthStencil);
 
-            // ── OIT Accumulation バッファ (R16G16B16A16_Float) ──
-            _accumTexture = _d3d.CreateTexture2D(new Texture2DDescription
+            _accumTexture = currentDevice.CreateTexture2D(new Texture2DDescription
             {
                 Width = width,
                 Height = height,
@@ -321,11 +510,10 @@ float4 PS_Resolve(PSInput input) : SV_Target
                 Usage = ResourceUsage.Default,
                 BindFlags = BindFlags.RenderTarget | BindFlags.ShaderResource,
             });
-            _accumRtv = _d3d.CreateRenderTargetView(_accumTexture);
-            _accumSrv = _d3d.CreateShaderResourceView(_accumTexture);
+            _accumRtv = currentDevice.CreateRenderTargetView(_accumTexture);
+            _accumSrv = currentDevice.CreateShaderResourceView(_accumTexture);
 
-            // ── OIT Revealage バッファ (R16_Float) ──
-            _revealTexture = _d3d.CreateTexture2D(new Texture2DDescription
+            _revealTexture = currentDevice.CreateTexture2D(new Texture2DDescription
             {
                 Width = width,
                 Height = height,
@@ -336,11 +524,10 @@ float4 PS_Resolve(PSInput input) : SV_Target
                 Usage = ResourceUsage.Default,
                 BindFlags = BindFlags.RenderTarget | BindFlags.ShaderResource,
             });
-            _revealRtv = _d3d.CreateRenderTargetView(_revealTexture);
-            _revealSrv = _d3d.CreateShaderResourceView(_revealTexture);
+            _revealRtv = currentDevice.CreateRenderTargetView(_revealTexture);
+            _revealSrv = currentDevice.CreateShaderResourceView(_revealTexture);
 
-            // ── FXAA 中間バッファ (B8G8R8A8_UNorm) ──
-            _fxaaTexture = _d3d.CreateTexture2D(new Texture2DDescription
+            _fxaaTexture = currentDevice.CreateTexture2D(new Texture2DDescription
             {
                 Width = width,
                 Height = height,
@@ -351,18 +538,56 @@ float4 PS_Resolve(PSInput input) : SV_Target
                 Usage = ResourceUsage.Default,
                 BindFlags = BindFlags.RenderTarget | BindFlags.ShaderResource,
             });
-            _fxaaRtv = _d3d.CreateRenderTargetView(_fxaaTexture);
-            _fxaaSrv = _d3d.CreateShaderResourceView(_fxaaTexture);
+            _fxaaRtv = currentDevice.CreateRenderTargetView(_fxaaTexture);
+            _fxaaSrv = currentDevice.CreateShaderResourceView(_fxaaTexture);
+
+            // ─── 影アトラス巨大テクスチャ (8x6 ＝計48タイル) ───
+            int maxTileSize = 16384 / 8; // 横8分割なので1タイルあたり最大2048pxに制限
+            int actualTileSize = Math.Min(targetRes, maxTileSize);
+
+            int atlasWidth = actualTileSize * 8;
+            int atlasHeight = actualTileSize * 6;
+
+            _shadowAtlasTex = currentDevice.CreateTexture2D(new Texture2DDescription
+            {
+                Width = atlasWidth,
+                Height = atlasHeight,
+                MipLevels = 1,
+                ArraySize = 1,
+                Format = Format.R32_Float,
+                SampleDescription = new SampleDescription(1, 0),
+                Usage = ResourceUsage.Default,
+                BindFlags = BindFlags.RenderTarget | BindFlags.ShaderResource,
+            });
+            _shadowAtlasRtv = currentDevice.CreateRenderTargetView(_shadowAtlasTex);
+            _shadowAtlasSrv = currentDevice.CreateShaderResourceView(_shadowAtlasTex);
+
+            _shadowAtlasDepthTex = currentDevice.CreateTexture2D(new Texture2DDescription
+            {
+                Width = atlasWidth,
+                Height = atlasHeight,
+                MipLevels = 1,
+                ArraySize = 1,
+                Format = Format.D24_UNorm_S8_UInt,
+                SampleDescription = new SampleDescription(1, 0),
+                Usage = ResourceUsage.Default,
+                BindFlags = BindFlags.DepthStencil,
+            });
+            _shadowAtlasDsv = currentDevice.CreateDepthStencilView(_shadowAtlasDepthTex);
+
+            _renderTargetBitmap?.Dispose();
+            _renderTargetBitmap = D2DD3DBridge.GetD2DBitmapFromD3DTexture(_renderTarget, devices);
 
             if (!_initialized)
             {
-                if (!InitializeShaders()) return false;
-                if (!InitializeStates()) return false;
-                InitializeGeometry();
+                if (!InitializeShaders(currentDevice)) return false;
+                if (!InitializeStates(currentDevice)) return false;
+                InitializeGeometry(currentDevice);
             }
 
             _initialized = true;
-            Iyahon_D3D11Renderer_CorePlugin.Log($"DepthSortRenderer 初期化完了: {width}x{height} (OIT + FXAA)");
+            _currentShadowResolution = targetRes;
+            Iyahon_D3D11Renderer_CorePlugin.Log($"DepthSortRenderer 初期化完了: {width}x{height} (影アトラス統合8x6版)");
             return true;
         }
         catch (Exception ex)
@@ -372,61 +597,64 @@ float4 PS_Resolve(PSInput input) : SV_Target
         }
     }
 
-    private bool InitializeShaders()
+    private bool InitializeShaders(ID3D11Device device)
     {
         try
         {
-            // ── メインシェーダ (パス1/パス2) ──
             var vsBlob = Vortice.D3DCompiler.Compiler.Compile(
                 MainShaderSource, "VS", "inline_shader",
                 Array.Empty<ShaderMacro>(), null,
                 "vs_5_0", Vortice.D3DCompiler.ShaderFlags.None, Vortice.D3DCompiler.EffectFlags.None);
             if (vsBlob == null) { Iyahon_D3D11Renderer_CorePlugin.Log("VS コンパイルエラー"); return false; }
 
-            _vs = _d3d.CreateVertexShader(vsBlob);
+            _vs = device.CreateVertexShader(vsBlob);
             var inputElements = new[]
             {
                 new InputElementDescription("POSITION", 0, Format.R32G32B32_Float, 0, 0),
                 new InputElementDescription("TEXCOORD", 0, Format.R32G32_Float,    12, 0),
             };
-            _inputLayout = _d3d.CreateInputLayout(inputElements, vsBlob);
+            _inputLayout = device.CreateInputLayout(inputElements, vsBlob);
             vsBlob.Dispose();
 
-            // PS_Opaque (パス1)
             var psOpaqueBlob = Vortice.D3DCompiler.Compiler.Compile(
                 MainShaderSource, "PS_Opaque", "inline_shader",
                 Array.Empty<ShaderMacro>(), null,
                 "ps_5_0", Vortice.D3DCompiler.ShaderFlags.None, Vortice.D3DCompiler.EffectFlags.None);
             if (psOpaqueBlob == null) { Iyahon_D3D11Renderer_CorePlugin.Log("PS_Opaque コンパイルエラー"); return false; }
-            _psOpaque = _d3d.CreatePixelShader(psOpaqueBlob);
+            _psOpaque = device.CreatePixelShader(psOpaqueBlob);
             psOpaqueBlob.Dispose();
 
-            // PS_OIT (パス2)
+            var psShadowBlob = Vortice.D3DCompiler.Compiler.Compile(
+                MainShaderSource, "PS_ShadowCube", "inline_shader",
+                Array.Empty<ShaderMacro>(), null,
+                "ps_5_0", Vortice.D3DCompiler.ShaderFlags.None, Vortice.D3DCompiler.EffectFlags.None);
+            if (psShadowBlob == null) { Iyahon_D3D11Renderer_CorePlugin.Log("PS_ShadowCube コンパイルエラー"); return false; }
+            _psShadowCube = device.CreatePixelShader(psShadowBlob);
+            psShadowBlob.Dispose();
+
             var psOITBlob = Vortice.D3DCompiler.Compiler.Compile(
                 MainShaderSource, "PS_OIT", "inline_shader",
                 Array.Empty<ShaderMacro>(), null,
                 "ps_5_0", Vortice.D3DCompiler.ShaderFlags.None, Vortice.D3DCompiler.EffectFlags.None);
             if (psOITBlob == null) { Iyahon_D3D11Renderer_CorePlugin.Log("PS_OIT コンパイルエラー"); return false; }
-            _psOIT = _d3d.CreatePixelShader(psOITBlob);
+            _psOIT = device.CreatePixelShader(psOITBlob);
             psOITBlob.Dispose();
 
-            // PS_SemiTrans (標準モード半透明)
             var psSemiBlob = Vortice.D3DCompiler.Compiler.Compile(
                 MainShaderSource, "PS_SemiTrans", "inline_shader",
                 Array.Empty<ShaderMacro>(), null,
                 "ps_5_0", Vortice.D3DCompiler.ShaderFlags.None, Vortice.D3DCompiler.EffectFlags.None);
             if (psSemiBlob == null) { Iyahon_D3D11Renderer_CorePlugin.Log("PS_SemiTrans コンパイルエラー"); return false; }
-            _psSemiTrans = _d3d.CreatePixelShader(psSemiBlob);
+            _psSemiTrans = device.CreatePixelShader(psSemiBlob);
             psSemiBlob.Dispose();
 
-            // ── 解決シェーダ (パス3) ──
             var resolveVsBlob = Vortice.D3DCompiler.Compiler.Compile(
                 ResolveShaderSource, "VS_Resolve", "inline_resolve",
                 Array.Empty<ShaderMacro>(), null,
                 "vs_5_0", Vortice.D3DCompiler.ShaderFlags.None, Vortice.D3DCompiler.EffectFlags.None);
             if (resolveVsBlob == null) { Iyahon_D3D11Renderer_CorePlugin.Log("VS_Resolve コンパイルエラー"); return false; }
-            _resolveVs = _d3d.CreateVertexShader(resolveVsBlob);
-            _resolveInputLayout = _d3d.CreateInputLayout(inputElements, resolveVsBlob);
+            _resolveVs = device.CreateVertexShader(resolveVsBlob);
+            _resolveInputLayout = device.CreateInputLayout(inputElements, resolveVsBlob);
             resolveVsBlob.Dispose();
 
             var resolvePsBlob = Vortice.D3DCompiler.Compiler.Compile(
@@ -434,22 +662,20 @@ float4 PS_Resolve(PSInput input) : SV_Target
                 Array.Empty<ShaderMacro>(), null,
                 "ps_5_0", Vortice.D3DCompiler.ShaderFlags.None, Vortice.D3DCompiler.EffectFlags.None);
             if (resolvePsBlob == null) { Iyahon_D3D11Renderer_CorePlugin.Log("PS_Resolve コンパイルエラー"); return false; }
-            _resolvePs = _d3d.CreatePixelShader(resolvePsBlob);
+            _resolvePs = device.CreatePixelShader(resolvePsBlob);
             resolvePsBlob.Dispose();
 
-            // ── 定数バッファ ──
-            _cbPerObject = _d3d.CreateBuffer(
+            _cbPerObject = device.CreateBuffer(
                 new BufferDescription(
                     Marshal.SizeOf<CbPerObject>(),
                     BindFlags.ConstantBuffer));
 
-            // ── FXAA シェーダ (パス4) ──
             var fxaaVsBlob = Vortice.D3DCompiler.Compiler.Compile(
                 FxaaShaderSource.Source, "VS_Fxaa", "inline_fxaa",
                 Array.Empty<ShaderMacro>(), null,
                 "vs_5_0", Vortice.D3DCompiler.ShaderFlags.None, Vortice.D3DCompiler.EffectFlags.None);
             if (fxaaVsBlob == null) { Iyahon_D3D11Renderer_CorePlugin.Log("VS_Fxaa コンパイルエラー"); return false; }
-            _vsFxaa = _d3d.CreateVertexShader(fxaaVsBlob);
+            _vsFxaa = device.CreateVertexShader(fxaaVsBlob);
             fxaaVsBlob.Dispose();
 
             var fxaaPsBlob = Vortice.D3DCompiler.Compiler.Compile(
@@ -457,12 +683,17 @@ float4 PS_Resolve(PSInput input) : SV_Target
                 Array.Empty<ShaderMacro>(), null,
                 "ps_5_0", Vortice.D3DCompiler.ShaderFlags.None, Vortice.D3DCompiler.EffectFlags.None);
             if (fxaaPsBlob == null) { Iyahon_D3D11Renderer_CorePlugin.Log("PS_Fxaa コンパイルエラー"); return false; }
-            _psFxaa = _d3d.CreatePixelShader(fxaaPsBlob);
+            _psFxaa = device.CreatePixelShader(fxaaPsBlob);
             fxaaPsBlob.Dispose();
 
-            _cbFxaa = _d3d.CreateBuffer(
+            _cbFxaa = device.CreateBuffer(
                 new BufferDescription(
                     Marshal.SizeOf<CbFxaa>(),
+                    BindFlags.ConstantBuffer));
+
+            _cbLighting = device.CreateBuffer(
+                new BufferDescription(
+                    Marshal.SizeOf<CbLighting>(),
                     BindFlags.ConstantBuffer));
 
             return true;
@@ -474,11 +705,11 @@ float4 PS_Resolve(PSInput input) : SV_Target
         }
     }
 
-    private bool InitializeStates()
+    private bool InitializeStates(ID3D11Device device)
     {
         try
         {
-            _samplerPoint = _d3d.CreateSamplerState(new SamplerDescription
+            _samplerPoint = device.CreateSamplerState(new SamplerDescription
             {
                 Filter = Filter.MinMagMipPoint,
                 AddressU = TextureAddressMode.Clamp,
@@ -488,7 +719,7 @@ float4 PS_Resolve(PSInput input) : SV_Target
                 MaxLOD = float.MaxValue,
             });
 
-            _samplerLinear = _d3d.CreateSamplerState(new SamplerDescription
+            _samplerLinear = device.CreateSamplerState(new SamplerDescription
             {
                 Filter = Filter.MinMagMipLinear,
                 AddressU = TextureAddressMode.Clamp,
@@ -498,7 +729,6 @@ float4 PS_Resolve(PSInput input) : SV_Target
                 MaxLOD = float.MaxValue,
             });
 
-            // ── パス1: 通常プレマルチプライドアルファ合成 ──
             {
                 var desc = new BlendDescription { AlphaToCoverageEnable = false, IndependentBlendEnable = false };
                 desc.RenderTarget[0] = new RenderTargetBlendDescription
@@ -512,10 +742,9 @@ float4 PS_Resolve(PSInput input) : SV_Target
                     BlendOperationAlpha = BlendOperation.Add,
                     RenderTargetWriteMask = ColorWriteEnable.All,
                 };
-                _blendStateOpaque = _d3d.CreateBlendState(desc);
+                _blendStateOpaque = device.CreateBlendState(desc);
             }
 
-            // ── 標準モード半透明の前面深度プリパス: カラー書き込みなし ──
             {
                 var desc = new BlendDescription { AlphaToCoverageEnable = false, IndependentBlendEnable = false };
                 desc.RenderTarget[0] = new RenderTargetBlendDescription
@@ -523,15 +752,11 @@ float4 PS_Resolve(PSInput input) : SV_Target
                     IsBlendEnabled = false,
                     RenderTargetWriteMask = 0,
                 };
-                _blendStateNoColor = _d3d.CreateBlendState(desc);
+                _blendStateNoColor = device.CreateBlendState(desc);
             }
 
-            // ── パス2: OIT 蓄積ブレンド ──
-            // RT0 (accumulation): 加算 (One + One)
-            // RT1 (revealage):    乗算 (Zero + InvSrcAlpha) → result = dest * (1 - srcAlpha)
             {
                 var desc = new BlendDescription { AlphaToCoverageEnable = false, IndependentBlendEnable = true };
-                // RT0: Accumulation — 加算合成
                 desc.RenderTarget[0] = new RenderTargetBlendDescription
                 {
                     IsBlendEnabled = true,
@@ -543,22 +768,20 @@ float4 PS_Resolve(PSInput input) : SV_Target
                     BlendOperationAlpha = BlendOperation.Add,
                     RenderTargetWriteMask = ColorWriteEnable.All,
                 };
-                // RT1: Revealage — 乗算合成
                 desc.RenderTarget[1] = new RenderTargetBlendDescription
                 {
                     IsBlendEnabled = true,
                     SourceBlend = Blend.Zero,
-                    DestinationBlend = Blend.InverseSourceColor,   // R チャンネルに (1 - c.a) を掛ける
+                    DestinationBlend = Blend.InverseSourceColor,
                     BlendOperation = BlendOperation.Add,
                     SourceBlendAlpha = Blend.Zero,
-                    DestinationBlendAlpha = Blend.One,             // アルファチャンネルはそのまま維持（実質無意味）
+                    DestinationBlendAlpha = Blend.One,
                     BlendOperationAlpha = BlendOperation.Add,
-                    RenderTargetWriteMask = ColorWriteEnable.Red,  // R チャンネルのみ書き込む
+                    RenderTargetWriteMask = ColorWriteEnable.Red,
                 };
-                _blendStateOIT = _d3d.CreateBlendState(desc);
+                _blendStateOIT = device.CreateBlendState(desc);
             }
 
-            // ── パス3: 解決パスのブレンド (プレマルチアルファで合成) ──
             {
                 var desc = new BlendDescription { AlphaToCoverageEnable = false, IndependentBlendEnable = false };
                 desc.RenderTarget[0] = new RenderTargetBlendDescription
@@ -572,10 +795,9 @@ float4 PS_Resolve(PSInput input) : SV_Target
                     BlendOperationAlpha = BlendOperation.Add,
                     RenderTargetWriteMask = ColorWriteEnable.All,
                 };
-                _blendStateResolve = _d3d.CreateBlendState(desc);
+                _blendStateResolve = device.CreateBlendState(desc);
             }
 
-            // ── パス4: FXAA (上書き) ──
             {
                 var desc = new BlendDescription { AlphaToCoverageEnable = false, IndependentBlendEnable = false };
                 desc.RenderTarget[0] = new RenderTargetBlendDescription
@@ -583,11 +805,10 @@ float4 PS_Resolve(PSInput input) : SV_Target
                     IsBlendEnabled = false,
                     RenderTargetWriteMask = ColorWriteEnable.All,
                 };
-                _blendStateFxaa = _d3d.CreateBlendState(desc);
+                _blendStateFxaa = device.CreateBlendState(desc);
             }
 
-            // ── デプスステンシルステート ──
-            _depthStateOpaque = _d3d.CreateDepthStencilState(new DepthStencilDescription
+            _depthStateOpaque = device.CreateDepthStencilState(new DepthStencilDescription
             {
                 DepthEnable = true,
                 DepthWriteMask = DepthWriteMask.All,
@@ -595,15 +816,15 @@ float4 PS_Resolve(PSInput input) : SV_Target
                 StencilEnable = false,
             });
 
-            _depthStateOIT = _d3d.CreateDepthStencilState(new DepthStencilDescription
+            _depthStateOIT = device.CreateDepthStencilState(new DepthStencilDescription
             {
                 DepthEnable = true,
-                DepthWriteMask = DepthWriteMask.Zero,   // 書き込みOFF
+                DepthWriteMask = DepthWriteMask.Zero,
                 DepthFunc = ComparisonFunction.LessEqual,
                 StencilEnable = false,
             });
 
-            _depthStateSemiTrans = _d3d.CreateDepthStencilState(new DepthStencilDescription
+            _depthStateSemiTrans = device.CreateDepthStencilState(new DepthStencilDescription
             {
                 DepthEnable = true,
                 DepthWriteMask = DepthWriteMask.All,
@@ -627,7 +848,7 @@ float4 PS_Resolve(PSInput input) : SV_Target
                 },
             });
 
-            _depthStateSemiBack = _d3d.CreateDepthStencilState(new DepthStencilDescription
+            _depthStateSemiBack = device.CreateDepthStencilState(new DepthStencilDescription
             {
                 DepthEnable = true,
                 DepthWriteMask = DepthWriteMask.Zero,
@@ -651,7 +872,7 @@ float4 PS_Resolve(PSInput input) : SV_Target
                 },
             });
 
-            _depthStateSemiFront = _d3d.CreateDepthStencilState(new DepthStencilDescription
+            _depthStateSemiFront = device.CreateDepthStencilState(new DepthStencilDescription
             {
                 DepthEnable = true,
                 DepthWriteMask = DepthWriteMask.Zero,
@@ -675,14 +896,14 @@ float4 PS_Resolve(PSInput input) : SV_Target
                 },
             });
 
-            _depthStateDisabled = _d3d.CreateDepthStencilState(new DepthStencilDescription
+            _depthStateDisabled = device.CreateDepthStencilState(new DepthStencilDescription
             {
                 DepthEnable = false,
                 DepthWriteMask = DepthWriteMask.Zero,
                 StencilEnable = false,
             });
 
-            _rasterizerState = _d3d.CreateRasterizerState(new RasterizerDescription
+            _rasterizerState = device.CreateRasterizerState(new RasterizerDescription
             {
                 FillMode = FillMode.Solid,
                 CullMode = CullMode.None,
@@ -698,9 +919,8 @@ float4 PS_Resolve(PSInput input) : SV_Target
         }
     }
 
-    private unsafe void InitializeGeometry()
+    private unsafe void InitializeGeometry(ID3D11Device device)
     {
-        // アイテム描画用クワッド
         var vertices = new Vertex[]
         {
             new() { Position = new Vector3(-0.5f, -0.5f, 0f), TexCoord = new Vector2(0f, 0f) },
@@ -713,12 +933,11 @@ float4 PS_Resolve(PSInput input) : SV_Target
         int totalBytes = stride * vertices.Length;
         fixed (Vertex* pVerts = vertices)
         {
-            _vertexBuffer = _d3d.CreateBuffer(
+            _vertexBuffer = device.CreateBuffer(
                 new BufferDescription(totalBytes, BindFlags.VertexBuffer),
                 new SubresourceData((IntPtr)pVerts, totalBytes));
         }
 
-        // 解決パス用フルスクリーンクワッド (NDC: -1..1)
         var resolveVerts = new Vertex[]
         {
             new() { Position = new Vector3(-1f, -1f, 0f), TexCoord = new Vector2(0f, 1f) },
@@ -728,33 +947,264 @@ float4 PS_Resolve(PSInput input) : SV_Target
         };
         fixed (Vertex* pVerts = resolveVerts)
         {
-            _resolveVertexBuffer = _d3d.CreateBuffer(
+            _resolveVertexBuffer = device.CreateBuffer(
                 new BufferDescription(totalBytes, BindFlags.VertexBuffer),
                 new SubresourceData((IntPtr)pVerts, totalBytes));
         }
     }
 
-    /// <summary>
-    /// 設定に応じて OIT または標準モード (Painter's Algorithm) でレンダリング。
-    /// </summary>
-    public ID3D11Texture2D? Render(List<RenderItem> items, int screenWidth, int screenHeight)
+    public ID3D11Texture2D? Render(IGraphicsDevicesAndContext devices, List<RenderItem> items, int screenWidth, int screenHeight)
     {
         if (!_initialized || _rtv == null || _dsv == null) return null;
         if (items.Count == 0) return null;
 
-        var mode = D3D11RendererSettings.Default.TransparencyMode;
+        PruneEffects();
+
+        // ─── 影描画の前に、前フレームのバインドを確実に解除して衝突を防ぐ ───
+        devices.D3D.DeviceContext.PSSetShaderResource(2, null!);
+
+        var settings = D3D11RendererSettings.Default;
+        int targetRes = (int)settings.ShadowResolution;
+
+        int maxTileSize = 16384 / 8;
+        int actualTileSize = Math.Min(targetRes, maxTileSize);
+
+        // カメラの中心点（合焦面）を計算
+        Vector3 cameraTarget = Vector3.Zero;
+        if (items != null && items.Count > 0)
+        {
+            var firstItem = items.FirstOrDefault();
+            if (firstItem != null)
+            {
+                if (Matrix4x4.Invert(firstItem.DrawDescription.Camera, out var invCam))
+                {
+                    cameraTarget = Vector3.Transform(Vector3.Zero, invCam);
+                }
+            }
+        }
+
+        // ─── 影描画：アトラスセクションを一気にクリア＆描画 ───
+        if (settings.EnableShadow && _shadowAtlasRtv != null && _shadowAtlasDsv != null)
+        {
+            var activeLights = LightManager.GetActiveLights();
+            var shadowLights = activeLights.Where(l => l.CastShadow).Take(MAX_SHADOWS).ToList();
+
+            // アトラス全体を1回だけクリア（クリアは1.0f）
+            devices.D3D.DeviceContext.OMSetRenderTargets(_shadowAtlasRtv, _shadowAtlasDsv);
+            devices.D3D.DeviceContext.ClearRenderTargetView(_shadowAtlasRtv, new Color4(1.0f, 1.0f, 1.0f, 1.0f));
+            devices.D3D.DeviceContext.ClearDepthStencilView(_shadowAtlasDsv, DepthStencilClearFlags.Depth, 1.0f, 0);
+
+            // ★修正：影描画開始時に、D3D11の必要なステートをすべて明示的にセットします。
+            // D2Dベイクや前フレームのFXAA等で破壊されたステートをここで完全にリセットし、シャドウアトラスへのデプス書き込みを保証します。
+            devices.D3D.DeviceContext.OMSetDepthStencilState(_depthStateOpaque, 0); // 深度有効
+            devices.D3D.DeviceContext.OMSetBlendState(_blendStateFxaa, null, unchecked((int)0xFFFFFFFF)); // ブレンドを完全無効化（デプスのブレンド異常を防止）
+            devices.D3D.DeviceContext.RSSetState(_rasterizerState); // ラスタライザー（カリング・クリッピング保護）
+
+
+            int currentTile = 0;
+            for (int i = 0; i < shadowLights.Count; i++)
+            {
+                var shadowLight = shadowLights[i];
+                bool isCube = shadowLight.Type == LightType.Point;
+                int tilesNeeded = isCube ? 6 : 1;
+
+                // 最大48タイルの範囲内で安全に割り当て
+                if (currentTile + tilesNeeded <= 48)
+                {
+                    // ライトタイプごとに必要なビュー射影だけを計算する(無駄な計算を避ける)。
+                    // Point: キューブ各面ごとにRenderShadowMap内で個別計算するためここでは不要。
+                    // Area: 光源中心から単一視点(PCSS用シャドウマップ1枚分)。
+                    // Directional/Spot: 通常の単一視点。
+                    Matrix4x4 lightViewProj = Matrix4x4.Identity;
+                    if (shadowLight.Type == LightType.Area)
+                    {
+                        lightViewProj = LightManager.BuildAreaSingleViewProj(shadowLight, items);
+                    }
+                    else if (!isCube)
+                    {
+                        lightViewProj = LightManager.BuildLightViewProj(shadowLight, screenWidth, screenHeight, items);
+                    }
+
+                    // ★ 影の動的LOD（距離減衰スケール）の計算
+                    float scaleFactor = 1.0f;
+                    if (shadowLight.Type != LightType.Directional)
+                    {
+                        float dist = Vector3.Distance(cameraTarget, shadowLight.Position);
+                        if (dist > 8000f) scaleFactor = 0.25f; // 8000px超で1/4解像度に動的ダウン
+                        else if (dist > 4000f) scaleFactor = 0.5f;  // 4000px超で1/2解像度に動的ダウン
+                    }
+
+                    int renderingRes = (int)(actualTileSize * scaleFactor);
+
+                    RenderShadowMap(devices.D3D.Device, devices.D3D.DeviceContext, items, shadowLight, lightViewProj, currentTile, actualTileSize, renderingRes);
+                    currentTile += tilesNeeded;
+                }
+            }
+
+            // レンダーターゲットの解除
+            devices.D3D.DeviceContext.OMSetRenderTargets((ID3D11RenderTargetView?)null, null);
+        }
+
+        var mode = settings.TransparencyMode;
         return mode == TransparencyMode.Standard
-            ? RenderStandard(items, screenWidth, screenHeight)
-            : RenderOIT(items, screenWidth, screenHeight);
+            ? RenderStandard(devices, items, screenWidth, screenHeight)
+            : RenderOIT(devices, items, screenWidth, screenHeight);
     }
 
-    /// <summary>
-    /// 標準モード。<br/>
-    /// 不透明を通常描画後、半透明を前面深度プリパス+前後分離合成で描画する。<br/>
-    /// 設定の層数 (2/4/8) で半透明の背面寄与量を切り替える。
-    /// </summary>
-    private ID3D11Texture2D? RenderStandard(List<RenderItem> items, int screenWidth, int screenHeight)
+    private void RenderShadowMap(ID3D11Device d3d, ID3D11DeviceContext ctx, List<RenderItem> items, LightData shadowLight, Matrix4x4 lightViewProj, int startTile, int actualTileSize, int renderingRes)
     {
+        bool isCube = shadowLight.Type == LightType.Point;
+
+        if (isCube)
+        {
+            for (int face = 0; face < 6; face++)
+            {
+                int tileIdx = startTile + face;
+                SetAtlasViewport(ctx, tileIdx, actualTileSize, renderingRes);
+
+                var cubeViewProj = LightManager.BuildCubeLightViewProj(shadowLight.Position, face, shadowLight.Range);
+                DrawShadowObjects(d3d, ctx, items, shadowLight, cubeViewProj, true);
+            }
+        }
+        else
+        {
+            // Area光源も含め、単一視点のシャドウマップ1枚のみ描画する(1照明=1パス)。
+            // Area光源のソフトシャドウ表現はシェーダー側のPCSS(ブロッカーサーチ+可変PCFカーネル)
+            // に任せ、ここでは追加のドローコールを発生させない。
+            SetAtlasViewport(ctx, startTile, actualTileSize, renderingRes);
+            DrawShadowObjects(d3d, ctx, items, shadowLight, lightViewProj, false);
+        }
+    }
+
+    private void SetAtlasViewport(ID3D11DeviceContext ctx, int tileIdx, int actualTileSize, int renderingRes)
+    {
+        // 8x6 座標系ビューポート設定
+        int x = tileIdx % 8;
+        int y = tileIdx / 8;
+        // 指定されたタイルセルの内部で、必要十分な解像度(LOD)だけを切り取って描画
+        ctx.RSSetViewport(new Viewport(x * actualTileSize, y * actualTileSize, renderingRes, renderingRes, 0f, 1f));
+    }
+
+    private void DrawShadowObjects(ID3D11Device d3d, ID3D11DeviceContext ctx, List<RenderItem> items, LightData shadowLight, Matrix4x4 lightViewProj, bool isCube)
+    {
+        foreach (var item in items)
+        {
+            if (item.ObjModels == null && item.Srv == null) continue;
+            // ★修正：押し出しエフェクトも3Dのレイマーチング影に対応させるため、スキップ処理を削除します。
+
+            if (item.ObjModels != null)
+            {
+                // OBJモデルの影描画処理（既存のまま）
+                try
+                {
+                    if (_objModelRenderer == null)
+                    {
+                        _objModelRenderer = new ObjModelRenderer();
+                    }
+                    _objModelRenderer.Initialize(d3d, ctx);
+
+                    foreach (var model in item.ObjModels)
+                    {
+                        Matrix4x4 modelMatrix = BuildObjModelMatrix(item);
+                        _objModelRenderer.RenderShadow(
+                            d3d, ctx, model, modelMatrix, lightViewProj,
+                            shadowLight.Position, isCube ? shadowLight.Range : 0f, isCube);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Iyahon_D3D11Renderer_CorePlugin.Log($"OBJモデル影描画エラー: {ex.Message}");
+                }
+            }
+            else if (item.D3DVideoEffect != null && item.OriginalItem != null && item.Srv != null)
+            {
+                var effectId = item.D3DVideoEffect.D3DEffectId;
+                var effect = GetOrCreateEffect(item.OriginalItem, effectId);
+                if (effect != null)
+                {
+                    try
+                    {
+                        effect.Initialize(d3d, ctx);
+                        item.D3DVideoEffect.ConfigureEffect(effect, item.ItemFrame, item.ItemLength, item.Fps);
+                        Matrix4x4 modelMatrix = BuildModelMatrix(item);
+
+                        // ★修正：2D板ポリゴンで平らな影を描くのをやめ、
+                        // シャドウパス用のコンテキストを準備してエフェクト自身の Render() で描画させます。
+                        var renderContext = new D3DRenderContext
+                        {
+                            WorldMatrix = modelMatrix,
+                            ViewProjectionMatrix = lightViewProj,
+                            CameraWorldPosition = shadowLight.Position, // 影レイマーチングの視点をシャドウ光源位置に設定
+                            TextureWidth = (int)item.PixelWidth,
+                            TextureHeight = (int)item.PixelHeight,
+                            HalfScreenWidth = 0f, // 3D射影変換を行うため 0
+                            HalfScreenHeight = 0f,
+                            Opacity = item.Opacity,
+                            AlphaThreshold = 0.5f,
+                            CameraMatrix = Matrix4x4.Identity,
+                            IsShadowPass = true,
+                            ShadowLightPos = shadowLight.Position,
+                            ShadowLightRange = isCube ? shadowLight.Range : 0f
+                        };
+
+                        effect.Render(ctx, d3d, item.Srv, renderContext);
+                    }
+                    catch (Exception ex)
+                    {
+                        Iyahon_D3D11Renderer_CorePlugin.Log($"D3Dエフェクト影描画エラー: {ex.Message}");
+                    }
+                }
+            }
+            else if (item.Srv != null)
+            {
+                // エフェクト未適用アイテムは従来通り安定した平面影を描画（既存のまま）
+                try
+                {
+                    Matrix4x4 modelMatrix = BuildModelMatrix(item);
+                    DrawStandardShadowCube(ctx, item, modelMatrix, lightViewProj, shadowLight.Position, isCube ? shadowLight.Range : 0f);
+                }
+                catch (Exception ex)
+                {
+                    Iyahon_D3D11Renderer_CorePlugin.Log($"標準アイテム影描画エラー: {ex.Message}");
+                }
+            }
+        }
+    }
+
+    private void DrawStandardShadowCube(ID3D11DeviceContext ctx, RenderItem item, Matrix4x4 modelMatrix, Matrix4x4 lightViewProj, Vector3 lightPos, float lightRange)
+    {
+        var cb = new CbPerObject
+        {
+            WorldMatrix = modelMatrix,
+            ViewProjMatrix = lightViewProj,
+            HalfWidth = 0f,
+            HalfHeight = 0f,
+            Opacity = item.Opacity,
+            AlphaThreshold = 0.5f,
+            ShadowLightPos = lightPos,
+            ShadowLightRange = lightRange,
+        };
+        ctx.UpdateSubresource(ref cb, _cbPerObject!);
+
+        ctx.IASetInputLayout(_inputLayout);
+        ctx.IASetVertexBuffer(0, _vertexBuffer!, Marshal.SizeOf<Vertex>(), 0);
+        ctx.IASetPrimitiveTopology(PrimitiveTopology.TriangleStrip);
+
+        ctx.VSSetShader(_vs);
+        ctx.VSSetConstantBuffer(0, _cbPerObject);
+        ctx.PSSetConstantBuffer(0, _cbPerObject);
+        ctx.PSSetShaderResource(0, item.Srv);
+        ctx.PSSetSampler(0, _samplerLinear);
+        ctx.PSSetShader(_psShadowCube);
+
+        ctx.Draw(4, 0);
+    }
+
+    private ID3D11Texture2D? RenderStandard(IGraphicsDevicesAndContext devices, List<RenderItem> items, int screenWidth, int screenHeight)
+    {
+        var d3d = devices.D3D.Device;
+        var ctx = devices.D3D.DeviceContext;
+
         float halfW = screenWidth / 2f;
         float halfH = screenHeight / 2f;
         int layerCount = (int)D3D11RendererSettings.Default.StandardDepthLayerCount;
@@ -767,123 +1217,105 @@ float4 PS_Resolve(PSInput input) : SV_Target
 
         try
         {
-            // ── バッファクリア (最終 RT + depth のみ) ──
-            _ctx.ClearRenderTargetView(_rtv!, new Color4(0f, 0f, 0f, 0f));
-            _ctx.ClearDepthStencilView(_dsv!, DepthStencilClearFlags.Depth | DepthStencilClearFlags.Stencil, 1.0f, 0);
+            ctx.ClearRenderTargetView(_rtv!, new Color4(0f, 0f, 0f, 0f));
+            ctx.ClearDepthStencilView(_dsv!, DepthStencilClearFlags.Depth | DepthStencilClearFlags.Stencil, 1.0f, 0);
 
-            _ctx.RSSetViewport(new Viewport(0, 0, _width, _height, 0f, 1f));
-            _ctx.RSSetState(_rasterizerState);
-            _ctx.IASetPrimitiveTopology(PrimitiveTopology.TriangleStrip);
+            ctx.RSSetViewport(new Viewport(0, 0, _width, _height, 0f, 1f));
+            ctx.RSSetState(_rasterizerState);
+            ctx.IASetPrimitiveTopology(PrimitiveTopology.TriangleStrip);
 
-            _ctx.VSSetConstantBuffer(0, _cbPerObject);
-            _ctx.PSSetConstantBuffer(0, _cbPerObject);
-            _ctx.PSSetSampler(0, _samplerLinear);
+            ctx.VSSetConstantBuffer(0, _cbPerObject);
+            ctx.PSSetConstantBuffer(0, _cbPerObject);
 
-            // ワールド行列を事前計算 + インデックス保持
+            var cbLight = LightManager.BuildConstantBuffer(screenWidth, screenHeight, items);
+            ctx.UpdateSubresource(ref cbLight, _cbLighting!);
+            ctx.VSSetConstantBuffer(1, _cbLighting);
+            ctx.PSSetConstantBuffer(1, _cbLighting);
+
+            BindShadowResources(ctx);
+
+            ctx.PSSetSampler(0, _samplerLinear);
+
             var itemsWithWorld = items
-                .Where(i => i.Srv != null)
-                .Select((item, index) => (item, world: BuildWorldMatrix(item), index))
+                .Where(i => i.Srv != null || i.ObjModels != null)
+                .Select((item, index) => (item, world: item.ObjModels != null ? BuildObjModelMatrix(item) : BuildModelMatrix(item), viewProj: BuildViewProjMatrix(item), index))
                 .ToList();
 
-            // ═══════════════════════════════════════════
-            // パス1: 不透明パス → _rtv 直接描画
-            // ═══════════════════════════════════════════
-            _ctx.OMSetRenderTargets(_rtv!, _dsv);
-            _ctx.OMSetBlendState(_blendStateOpaque, null, unchecked((int)0xFFFFFFFF));
-            _ctx.OMSetDepthStencilState(_depthStateOpaque, 0);
+            ctx.OMSetRenderTargets(_rtv!, _dsv);
+            ctx.OMSetBlendState(_blendStateOpaque, null, unchecked((int)0xFFFFFFFF));
+            ctx.OMSetDepthStencilState(_depthStateOpaque, 0);
 
-            _ctx.IASetInputLayout(_inputLayout);
-            _ctx.IASetVertexBuffer(0, _vertexBuffer!, Marshal.SizeOf<Vertex>(), 0);
-            _ctx.VSSetShader(_vs);
-            _ctx.PSSetShader(_psOpaque);
+            ctx.IASetInputLayout(_inputLayout);
+            ctx.IASetVertexBuffer(0, _vertexBuffer!, Marshal.SizeOf<Vertex>(), 0);
+            ctx.VSSetShader(_vs);
+            ctx.PSSetShader(_psOpaque);
 
-            foreach (var (item, world, _) in itemsWithWorld)
+            foreach (var (item, world, viewProj, _) in itemsWithWorld)
             {
-                DrawItem(item, world, halfW, halfH, 0.999f, _psOpaque!, _samplerLinear!);
+                DrawItem(d3d, ctx, item, world, viewProj, halfW, halfH, 0.999f, _psOpaque!, _samplerLinear!);
             }
 
-            // ═══════════════════════════════════════════
-            // 標準モード半透明の描画順
-            //   Zソートは使わず、YMM4 レイヤー順のみを使用
-            //   Layer 小 = 奥 (先に描画), Layer 大 = 手前 (後に描画)
-            // ═══════════════════════════════════════════
             var sorted = itemsWithWorld
                 .OrderBy(x => x.item.Layer)
                 .ThenBy(x => x.index)
                 .ToList();
 
-            // ═══════════════════════════════════════════
-            // パス2: 半透明前面 深度プリパス
-            //   depth write ON, stencil=1
-            // ═══════════════════════════════════════════
-            _ctx.OMSetRenderTargets(_rtv!, _dsv);
-            _ctx.OMSetBlendState(_blendStateNoColor, null, unchecked((int)0xFFFFFFFF));
-            _ctx.OMSetDepthStencilState(_depthStateSemiTrans, 1);
-            _ctx.PSSetShader(_psSemiTrans);
+            ctx.OMSetRenderTargets(_rtv!, _dsv);
+            ctx.OMSetBlendState(_blendStateNoColor, null, unchecked((int)0xFFFFFFFF));
+            ctx.OMSetDepthStencilState(_depthStateSemiTrans, 1);
+            ctx.PSSetShader(_psSemiTrans);
 
-            foreach (var (item, world, _) in sorted)
+            foreach (var (item, world, viewProj, _) in sorted)
             {
-                DrawItem(item, world, halfW, halfH, 0.004f, _psSemiTrans!, _samplerLinear!);
+                DrawItem(d3d, ctx, item, world, viewProj, halfW, halfH, 0.004f, _psSemiTrans!, _samplerLinear!);
             }
 
-            // ═══════════════════════════════════════════
-            // パス3: 半透明背面 色描画 (層数設定で可変)
-            // ═══════════════════════════════════════════
             if (backPassCount > 0)
             {
-                _ctx.OMSetBlendState(_blendStateOpaque, null, unchecked((int)0xFFFFFFFF));
-                _ctx.OMSetDepthStencilState(_depthStateSemiBack, 1);
+                ctx.OMSetBlendState(_blendStateOpaque, null, unchecked((int)0xFFFFFFFF));
+                ctx.OMSetDepthStencilState(_depthStateSemiBack, 1);
 
                 for (int pass = 0; pass < backPassCount; pass++)
                 {
                     float opacityMul = pass == 0 ? 1f : 0.5f;
-                    foreach (var (item, world, _) in sorted)
+                    foreach (var (item, world, viewProj, _) in sorted)
                     {
-                        DrawItem(item, world, halfW, halfH, 0.004f, _psSemiTrans!, _samplerLinear!, opacityMul);
+                        DrawItem(d3d, ctx, item, world, viewProj, halfW, halfH, 0.004f, _psSemiTrans!, _samplerLinear!, opacityMul);
                     }
                 }
             }
 
-            // ═══════════════════════════════════════════
-            // パス4: 不透明再描画（半透明背面が不透明の後ろから漏れるのを抑制）
-            //   不透明同士の前後を維持するため depth を再構築して描画
-            // ═══════════════════════════════════════════
-            _ctx.ClearDepthStencilView(_dsv!, DepthStencilClearFlags.Depth, 1.0f, 0);
-            _ctx.OMSetBlendState(_blendStateOpaque, null, unchecked((int)0xFFFFFFFF));
-            _ctx.OMSetDepthStencilState(_depthStateOpaque, 0);
-            _ctx.PSSetShader(_psOpaque);
+            ctx.ClearDepthStencilView(_dsv!, DepthStencilClearFlags.Depth, 1.0f, 0);
+            ctx.OMSetBlendState(_blendStateOpaque, null, unchecked((int)0xFFFFFFFF));
+            ctx.OMSetDepthStencilState(_depthStateOpaque, 0);
+            ctx.PSSetShader(_psOpaque);
 
-            foreach (var (item, world, _) in itemsWithWorld)
+            foreach (var (item, world, viewProj, _) in itemsWithWorld)
             {
-                DrawItem(item, world, halfW, halfH, 0.999f, _psOpaque!, _samplerLinear!, 1f);
+                DrawItem(d3d, ctx, item, world, viewProj, halfW, halfH, 0.999f, _psOpaque!, _samplerLinear!, 1f);
             }
 
-            // ═══════════════════════════════════════════
-            // パス5: 半透明前面 深度プリパス（パス4で再構築した depth 基準に合わせ直す）
-            // ═══════════════════════════════════════════
-            _ctx.OMSetBlendState(_blendStateNoColor, null, unchecked((int)0xFFFFFFFF));
-            _ctx.OMSetDepthStencilState(_depthStateSemiTrans, 1);
-            _ctx.PSSetShader(_psSemiTrans);
+            ctx.OMSetBlendState(_blendStateNoColor, null, unchecked((int)0xFFFFFFFF));
+            ctx.OMSetDepthStencilState(_depthStateSemiTrans, 1);
+            ctx.PSSetShader(_psSemiTrans);
 
-            foreach (var (item, world, _) in sorted)
+            foreach (var (item, world, viewProj, _) in sorted)
             {
-                DrawItem(item, world, halfW, halfH, 0.004f, _psSemiTrans!, _samplerLinear!, 1f);
+                DrawItem(d3d, ctx, item, world, viewProj, halfW, halfH, 0.004f, _psSemiTrans!, _samplerLinear!, 1f);
             }
 
-            // ═══════════════════════════════════════════
-            // パス6: 半透明前面 色描画
-            //   depth == frontDepth かつ stencil==1
-            // ═══════════════════════════════════════════
-            _ctx.OMSetBlendState(_blendStateOpaque, null, unchecked((int)0xFFFFFFFF));
-            _ctx.PSSetShader(_psSemiTrans);
-            _ctx.OMSetDepthStencilState(_depthStateSemiFront, 1);
+            ctx.OMSetBlendState(_blendStateOpaque, null, unchecked((int)0xFFFFFFFF));
+            ctx.PSSetShader(_psSemiTrans);
+            ctx.OMSetDepthStencilState(_depthStateSemiFront, 1);
 
-            foreach (var (item, world, _) in sorted)
+            foreach (var (item, world, viewProj, _) in sorted)
             {
-                DrawItem(item, world, halfW, halfH, 0.004f, _psSemiTrans!, _samplerLinear!, 1f);
+                DrawItem(d3d, ctx, item, world, viewProj, halfW, halfH, 0.004f, _psSemiTrans!, _samplerLinear!, 1f);
             }
 
-            _ctx.OMSetRenderTargets((ID3D11RenderTargetView?)null, null);
+            UnbindShadowResources(ctx);
+
+            ctx.OMSetRenderTargets((ID3D11RenderTargetView?)null, null);
             return _renderTarget;
         }
         catch (Exception ex)
@@ -893,112 +1325,112 @@ float4 PS_Resolve(PSInput input) : SV_Target
         }
     }
 
-    /// <summary>
-    /// OIT モード (Weighted Blended OIT)。<br/>
-    /// パス1: 不透明 → FXAA中間バッファ + depth確定<br/>
-    /// パス2: 半透明 → OIT蓄積バッファ (ソート不要)<br/>
-    /// パス3: OIT解決 → FXAA中間バッファに合成<br/>
-    /// パス4: FXAA → 最終RT
-    /// </summary>
-    private ID3D11Texture2D? RenderOIT(List<RenderItem> items, int screenWidth, int screenHeight)
+    private ID3D11Texture2D? RenderOIT(IGraphicsDevicesAndContext devices, List<RenderItem> items, int screenWidth, int screenHeight)
     {
         if (_accumRtv == null || _revealRtv == null) return null;
+
+        var d3d = devices.D3D.Device;
+        var ctx = devices.D3D.DeviceContext;
 
         float halfW = screenWidth / 2f;
         float halfH = screenHeight / 2f;
 
         try
         {
-            // ── 全バッファクリア ──
-            _ctx.ClearRenderTargetView(_fxaaRtv!, new Color4(0f, 0f, 0f, 0f));
-            _ctx.ClearRenderTargetView(_rtv!, new Color4(0f, 0f, 0f, 0f));
-            _ctx.ClearDepthStencilView(_dsv!, DepthStencilClearFlags.Depth, 1.0f, 0);
-            _ctx.ClearRenderTargetView(_accumRtv, new Color4(0f, 0f, 0f, 0f));
-            _ctx.ClearRenderTargetView(_revealRtv, new Color4(1f, 1f, 1f, 1f));
+            ctx.ClearRenderTargetView(_fxaaRtv!, new Color4(0f, 0f, 0f, 0f));
+            ctx.ClearRenderTargetView(_rtv!, new Color4(0f, 0f, 0f, 0f));
+            ctx.ClearDepthStencilView(_dsv!, DepthStencilClearFlags.Depth, 1.0f, 0);
+            ctx.ClearRenderTargetView(_accumRtv, new Color4(0f, 0f, 0f, 0f));
+            ctx.ClearRenderTargetView(_revealRtv, new Color4(1f, 1f, 1f, 1f));
 
-            _ctx.RSSetViewport(new Viewport(0, 0, _width, _height, 0f, 1f));
-            _ctx.RSSetState(_rasterizerState);
-            _ctx.IASetPrimitiveTopology(PrimitiveTopology.TriangleStrip);
+            ctx.RSSetViewport(new Viewport(0, 0, _width, _height, 0f, 1f));
+            ctx.RSSetState(_rasterizerState);
+            ctx.IASetPrimitiveTopology(PrimitiveTopology.TriangleStrip);
 
-            _ctx.VSSetConstantBuffer(0, _cbPerObject);
-            _ctx.PSSetConstantBuffer(0, _cbPerObject);
-            _ctx.PSSetSampler(0, _samplerPoint);
+            ctx.VSSetConstantBuffer(0, _cbPerObject);
+            ctx.PSSetConstantBuffer(0, _cbPerObject);
+
+            var cbLight = LightManager.BuildConstantBuffer(screenWidth, screenHeight, items);
+            ctx.UpdateSubresource(ref cbLight, _cbLighting!);
+            ctx.VSSetConstantBuffer(1, _cbLighting);
+            ctx.PSSetConstantBuffer(1, _cbLighting);
+
+            BindShadowResources(ctx);
+
+            ctx.PSSetSampler(0, _samplerPoint);
 
             var itemsWithWorld = items
-                .Where(i => i.Srv != null)
-                .Select(item => (item, world: BuildWorldMatrix(item)))
+                .Where(i => i.Srv != null || i.ObjModels != null)
+                .Select(item => (item, world: item.ObjModels != null ? BuildObjModelMatrix(item) : BuildModelMatrix(item), viewProj: BuildViewProjMatrix(item)))
                 .ToList();
 
-            // パス1: 不透明パス → FXAA中間バッファ
-            _ctx.OMSetRenderTargets(_fxaaRtv!, _dsv);
-            _ctx.OMSetBlendState(_blendStateOpaque, null, unchecked((int)0xFFFFFFFF));
-            _ctx.OMSetDepthStencilState(_depthStateOpaque, 0);
+            ctx.OMSetRenderTargets(_fxaaRtv!, _dsv);
+            ctx.OMSetBlendState(_blendStateOpaque, null, unchecked((int)0xFFFFFFFF));
+            ctx.OMSetDepthStencilState(_depthStateOpaque, 0);
 
-            _ctx.IASetInputLayout(_inputLayout);
-            _ctx.IASetVertexBuffer(0, _vertexBuffer!, Marshal.SizeOf<Vertex>(), 0);
-            _ctx.VSSetShader(_vs);
-            _ctx.PSSetShader(_psOpaque);
+            ctx.IASetInputLayout(_inputLayout);
+            ctx.IASetVertexBuffer(0, _vertexBuffer!, Marshal.SizeOf<Vertex>(), 0);
+            ctx.VSSetShader(_vs);
+            ctx.PSSetShader(_psOpaque);
 
-            foreach (var (item, world) in itemsWithWorld)
+            foreach (var (item, world, viewProj) in itemsWithWorld)
             {
-                DrawItem(item, world, halfW, halfH, 0.999f, _psOpaque!, _samplerPoint!);
+                DrawItem(d3d, ctx, item, world, viewProj, halfW, halfH, 0.999f, _psOpaque!, _samplerPoint!);
             }
 
-            // パス2: OIT 蓄積パス
             var oitRtvs = new[] { _accumRtv, _revealRtv };
-            _ctx.OMSetRenderTargets(oitRtvs, _dsv);
-            _ctx.OMSetBlendState(_blendStateOIT, null, unchecked((int)0xFFFFFFFF));
-            _ctx.OMSetDepthStencilState(_depthStateOIT, 0);
-            _ctx.PSSetShader(_psOIT);
+            ctx.OMSetRenderTargets(oitRtvs, _dsv);
+            ctx.OMSetBlendState(_blendStateOIT, null, unchecked((int)0xFFFFFFFF));
+            ctx.OMSetDepthStencilState(_depthStateOIT, 0);
+            ctx.PSSetShader(_psOIT);
 
-            foreach (var (item, world) in itemsWithWorld)
+            foreach (var (item, world, viewProj) in itemsWithWorld)
             {
-                DrawItem(item, world, halfW, halfH, 0.004f, _psOIT!, _samplerPoint!);
+                DrawItem(d3d, ctx, item, world, viewProj, halfW, halfH, 0.004f, _psOIT!, _samplerPoint!);
             }
 
-            // パス3: 解決パス
-            _ctx.OMSetRenderTargets(_fxaaRtv!, (ID3D11DepthStencilView?)null);
-            _ctx.OMSetBlendState(_blendStateResolve, null, unchecked((int)0xFFFFFFFF));
-            _ctx.OMSetDepthStencilState(_depthStateDisabled, 0);
+            ctx.OMSetRenderTargets(_fxaaRtv!, (ID3D11DepthStencilView?)null);
+            ctx.OMSetBlendState(_blendStateResolve, null, unchecked((int)0xFFFFFFFF));
+            ctx.OMSetDepthStencilState(_depthStateDisabled, 0);
 
-            _ctx.IASetInputLayout(_resolveInputLayout);
-            _ctx.IASetVertexBuffer(0, _resolveVertexBuffer!, Marshal.SizeOf<Vertex>(), 0);
-            _ctx.VSSetShader(_resolveVs);
-            _ctx.PSSetShader(_resolvePs);
-            _ctx.PSSetSampler(0, _samplerLinear);
-            _ctx.PSSetShaderResource(0, _accumSrv);
-            _ctx.PSSetShaderResource(1, _revealSrv);
+            ctx.IASetInputLayout(_resolveInputLayout);
+            ctx.IASetVertexBuffer(0, _resolveVertexBuffer!, Marshal.SizeOf<Vertex>(), 0);
+            ctx.VSSetShader(_resolveVs);
+            ctx.PSSetShader(_resolvePs);
+            ctx.PSSetSampler(0, _samplerLinear);
+            ctx.PSSetShaderResource(0, _accumSrv);
+            ctx.PSSetShaderResource(1, _revealSrv);
 
-            _ctx.Draw(4, 0);
+            ctx.Draw(4, 0);
 
-            _ctx.PSSetShaderResource(0, (ID3D11ShaderResourceView?)null);
-            _ctx.PSSetShaderResource(1, (ID3D11ShaderResourceView?)null);
+            ctx.PSSetShaderResource(0, (ID3D11ShaderResourceView?)null);
+            ctx.PSSetShaderResource(1, (ID3D11ShaderResourceView?)null);
 
-            // パス4: FXAA
-            _ctx.OMSetRenderTargets(_rtv!, (ID3D11DepthStencilView?)null);
-            _ctx.OMSetBlendState(_blendStateFxaa, null, unchecked((int)0xFFFFFFFF));
-            _ctx.OMSetDepthStencilState(_depthStateDisabled, 0);
+            ctx.OMSetRenderTargets(_rtv!, (ID3D11DepthStencilView?)null);
+            ctx.OMSetBlendState(_blendStateFxaa, null, unchecked((int)0xFFFFFFFF));
+            ctx.OMSetDepthStencilState(_depthStateDisabled, 0);
 
-            _ctx.IASetInputLayout(_resolveInputLayout);
-            _ctx.IASetVertexBuffer(0, _resolveVertexBuffer!, Marshal.SizeOf<Vertex>(), 0);
-            _ctx.VSSetShader(_vsFxaa);
-            _ctx.PSSetShader(_psFxaa);
-            _ctx.PSSetSampler(0, _samplerLinear);
-            _ctx.PSSetShaderResource(0, _fxaaSrv);
+            ctx.IASetInputLayout(_resolveInputLayout);
+            ctx.IASetVertexBuffer(0, _resolveVertexBuffer!, Marshal.SizeOf<Vertex>(), 0);
+            ctx.VSSetShader(_vsFxaa);
+            ctx.PSSetShader(_psFxaa);
+            ctx.PSSetSampler(0, _samplerLinear);
+            ctx.PSSetShaderResource(0, _fxaaSrv);
 
-            var cbFxaa = new CbFxaa
+            var cbFxaaLocal = new CbFxaa
             {
                 RcpFrameX = 1.0f / _width,
                 RcpFrameY = 1.0f / _height,
             };
-            _ctx.UpdateSubresource(ref cbFxaa, _cbFxaa!);
-            _ctx.PSSetConstantBuffer(0, _cbFxaa);
+            ctx.UpdateSubresource(ref cbFxaaLocal, _cbFxaa!);
+            ctx.PSSetConstantBuffer(0, _cbFxaa);
 
-            _ctx.Draw(4, 0);
+            ctx.Draw(4, 0);
 
-            _ctx.PSSetShaderResource(0, (ID3D11ShaderResourceView?)null);
+            ctx.PSSetShaderResource(0, (ID3D11ShaderResourceView?)null);
+            UnbindShadowResources(ctx);
 
-            _ctx.OMSetRenderTargets((ID3D11RenderTargetView?)null, null);
+            ctx.OMSetRenderTargets((ID3D11RenderTargetView?)null, null);
             return _renderTarget;
         }
         catch (Exception ex)
@@ -1008,9 +1440,65 @@ float4 PS_Resolve(PSInput input) : SV_Target
         }
     }
 
-    private void DrawItem(RenderItem item, Matrix4x4 world, float halfW, float halfH, float alphaThreshold, ID3D11PixelShader activePs, ID3D11SamplerState activeSampler, float opacityMultiplier = 1f)
+    private void BindShadowResources(ID3D11DeviceContext ctx)
     {
-        // D3Dエフェクトが設定されている場合、エフェクトのRenderに委譲
+        if (!D3D11RendererSettings.Default.EnableShadow || _shadowAtlasSrv == null) return;
+
+        ctx.PSSetShaderResource(2, _shadowAtlasSrv);
+        // PCF(Percentage-Closer Filtering)は「各サンプル点で深度比較してから結果を平均する」
+        // のが正しい設計。Linearフィルタリングだと深度値そのものが先に補間されてしまい、
+        // 深度が急激に変化する境界(物体のシルエットエッジなど)で、手前と奥の深度が
+        // 混ざった実在しない中間値が生成され、誤った遮蔽判定の原因になっていた。
+        // PCFループ側で複数サンプルを平均しているため、ここはPointサンプリングが正しい。
+        ctx.PSSetSampler(1, _samplerPoint);
+    }
+
+    private void UnbindShadowResources(ID3D11DeviceContext ctx)
+    {
+        ctx.PSSetShaderResource(2, null!);
+        ctx.PSSetSampler(1, null!);
+    }
+
+    private void DrawItem(ID3D11Device d3d, ID3D11DeviceContext ctx, RenderItem item, Matrix4x4 world, Matrix4x4 viewProj, float halfW, float halfH, float alphaThreshold, ID3D11PixelShader activePs, ID3D11SamplerState activeSampler, float opacityMultiplier = 1f)
+    {
+        if (item.ObjModels != null)
+        {
+            try
+            {
+                if (_objModelRenderer == null)
+                {
+                    _objModelRenderer = new ObjModelRenderer();
+                }
+                _objModelRenderer.Initialize(d3d, ctx);
+
+                Matrix4x4 modelMatrix = BuildObjModelMatrix(item);
+                Matrix4x4 viewProjMatrix = BuildViewProjMatrix(item);
+
+                foreach (var model in item.ObjModels)
+                {
+                    _objModelRenderer.RenderModel(
+                        d3d, ctx, model, modelMatrix, viewProjMatrix, halfW, halfH,
+                        item.Opacity * opacityMultiplier, alphaThreshold,
+                        activePs == _psOIT);
+                }
+
+                ctx.IASetInputLayout(_inputLayout);
+                ctx.IASetVertexBuffer(0, _vertexBuffer!, Marshal.SizeOf<Vertex>(), 0);
+                ctx.IASetPrimitiveTopology(PrimitiveTopology.TriangleStrip);
+                ctx.VSSetShader(_vs);
+                ctx.VSSetConstantBuffer(0, _cbPerObject);
+                ctx.PSSetConstantBuffer(0, _cbPerObject);
+                ctx.RSSetState(_rasterizerState);
+                ctx.PSSetShader(activePs);
+                ctx.PSSetSampler(0, activeSampler);
+            }
+            catch (Exception ex)
+            {
+                Iyahon_D3D11Renderer_CorePlugin.Log($"OBJモデル描画エラー: {ex.Message}");
+            }
+            return;
+        }
+
         var d3dVideoEffect = item.D3DVideoEffect;
         var originalItem = item.OriginalItem;
 
@@ -1022,15 +1510,16 @@ float4 PS_Resolve(PSInput input) : SV_Target
             {
                 try
                 {
-                    effect.Initialize(_d3d, _ctx);
-
-                    // エフェクト固有パラメータを設定
+                    effect.Initialize(d3d, ctx);
                     d3dVideoEffect.ConfigureEffect(effect, item.ItemFrame, item.ItemLength, item.Fps);
 
-                    // 共通コンテキストを構築
+                    Matrix4x4 modelMatrix = BuildModelMatrix(item);
+                    Matrix4x4 viewProjMatrix = BuildViewProjMatrix(item);
+
                     var renderContext = new D3DRenderContext
                     {
-                        WorldMatrix = world,
+                        WorldMatrix = modelMatrix,
+                        ViewProjectionMatrix = viewProjMatrix,
                         TextureWidth = (int)item.PixelWidth,
                         TextureHeight = (int)item.PixelHeight,
                         HalfScreenWidth = halfW,
@@ -1040,18 +1529,17 @@ float4 PS_Resolve(PSInput input) : SV_Target
                         CameraMatrix = item.DrawDescription.Camera,
                     };
 
-                    effect.Render(_ctx, _d3d, item.Srv, renderContext);
+                    effect.Render(ctx, d3d, item.Srv, renderContext);
 
-                    // エフェクト描画後、元のパイプライン状態を復元
-                    _ctx.IASetInputLayout(_inputLayout);
-                    _ctx.IASetVertexBuffer(0, _vertexBuffer!, Marshal.SizeOf<Vertex>(), 0);
-                    _ctx.IASetPrimitiveTopology(PrimitiveTopology.TriangleStrip);
-                    _ctx.VSSetShader(_vs);
-                    _ctx.VSSetConstantBuffer(0, _cbPerObject);
-                    _ctx.PSSetConstantBuffer(0, _cbPerObject);
-                    _ctx.RSSetState(_rasterizerState);
-                    _ctx.PSSetShader(activePs);
-                    _ctx.PSSetSampler(0, activeSampler);
+                    ctx.IASetInputLayout(_inputLayout);
+                    ctx.IASetVertexBuffer(0, _vertexBuffer!, Marshal.SizeOf<Vertex>(), 0);
+                    ctx.IASetPrimitiveTopology(PrimitiveTopology.TriangleStrip);
+                    ctx.VSSetShader(_vs);
+                    ctx.VSSetConstantBuffer(0, _cbPerObject);
+                    ctx.PSSetConstantBuffer(0, _cbPerObject);
+                    ctx.RSSetState(_rasterizerState);
+                    ctx.PSSetShader(activePs);
+                    ctx.PSSetSampler(0, activeSampler);
                 }
                 catch (Exception ex)
                 {
@@ -1061,24 +1549,30 @@ float4 PS_Resolve(PSInput input) : SV_Target
             }
         }
 
-        // 通常の板ポリ描画
+        // ─── ★修正：エフェクトなし通常アイテム（床など）の描画 ───
         var cb = new CbPerObject
         {
             WorldMatrix = world,
+            ViewProjMatrix = viewProj,
             HalfWidth = halfW,
             HalfHeight = halfH,
             Opacity = item.Opacity * opacityMultiplier,
             AlphaThreshold = alphaThreshold,
+            ShadowLightPos = Vector3.Zero,
+            ShadowLightRange = 0f,
         };
-        _ctx.UpdateSubresource(ref cb, _cbPerObject!);
-        _ctx.PSSetShaderResource(0, item.Srv);
-        _ctx.Draw(4, 0);
+        ctx.UpdateSubresource(ref cb, _cbPerObject!);
+
+        // ★追加：直前に描画されたエフェクトによってスロット0の定数バッファが汚染されている可能性があるため、
+        // 通常アイテムを描画する直前に、床用の定数バッファリソース（_cbPerObject）を確実に再バインドします。
+        ctx.VSSetConstantBuffer(0, _cbPerObject);
+        ctx.PSSetConstantBuffer(0, _cbPerObject);
+
+        ctx.PSSetShaderResource(0, item.Srv);
+        ctx.Draw(4, 0);
     }
 
-    /// <summary>
-    /// YMM4 の DrawingEffect.cs 118行目と同等のワールド行列を構築する。
-    /// </summary>
-    private Matrix4x4 BuildWorldMatrix(RenderItem item)
+    private Matrix4x4 BuildModelMatrix(RenderItem item)
     {
         var desc = item.DrawDescription;
         float d2r = MathF.PI / 180f;
@@ -1089,26 +1583,60 @@ float4 PS_Resolve(PSInput input) : SV_Target
         float zx = (float)desc.Zoom.X;
         float zy = (float)desc.Zoom.Y;
         if (desc.Invert) zx = -zx;
-        var Zoom = Matrix4x4.CreateScale(zx, zy, 1f);
+        var Zoom = Matrix4x4.CreateScale(zx, zy, zScale: 1f);
 
         var Rz = Matrix4x4.CreateRotationZ(d2r * (float)desc.Rotation.Z);
         var Ry = Matrix4x4.CreateRotationY(d2r * -(float)desc.Rotation.Y);
         var Rx = Matrix4x4.CreateRotationX(d2r * -(float)desc.Rotation.X);
         var Tdraw = Matrix4x4.CreateTranslation(desc.Draw);
-        var cam = desc.Camera;
 
+        return S * Toffset * Zoom * Rz * Ry * Rx * Tdraw;
+    }
+
+    private Matrix4x4 BuildObjModelMatrix(RenderItem item)
+    {
+        var desc = item.DrawDescription;
+        float d2r = MathF.PI / 180f;
+
+        var modelData = item.ObjModels?[0];
+        var normalize = Matrix4x4.CreateTranslation(-(modelData?.ModelCenter ?? Vector3.Zero))
+                      * Matrix4x4.CreateScale(modelData?.ModelScale ?? 1f);
+
+        var yFlip = Matrix4x4.CreateScale(1f, -1f, 1f);
+
+        const float BaseScale = 200f;
+        var baseScaleM = Matrix4x4.CreateScale(BaseScale);
+
+        float zx = (float)desc.Zoom.X;
+        float zy = (float)desc.Zoom.Y;
+        if (desc.Invert) zx = -zx;
+        float zScale = (MathF.Abs(zx) + MathF.Abs(zy)) / 2f;
+        var Zoom = Matrix4x4.CreateScale(zx, zy, zScale);
+
+        var Rz = Matrix4x4.CreateRotationZ(d2r * (float)desc.Rotation.Z);
+        var Ry = Matrix4x4.CreateRotationY(d2r * -(float)desc.Rotation.Y);
+        var Rx = Matrix4x4.CreateRotationX(d2r * -(float)desc.Rotation.X);
+        var Tdraw = Matrix4x4.CreateTranslation(desc.Draw);
+
+        return normalize * yFlip * baseScaleM * Zoom * Rz * Ry * Rx * Tdraw;
+    }
+
+    private Matrix4x4 BuildViewProjMatrix(RenderItem item)
+    {
+        var desc = item.DrawDescription;
+        var cam = desc.Camera;
         var d2dProj = new Matrix4x4(
             1f, 0f, 0f, 0f,
             0f, 1f, 0f, 0f,
             0f, 0f, 1f, -1f / 1000f,
             0f, 0f, 0f, 1f
         );
-
-        return S * Toffset * Zoom * Rz * Ry * Rx * Tdraw * cam * d2dProj;
+        return cam * d2dProj;
     }
 
     private void DisposeTargets()
     {
+        _renderTargetBitmap?.Dispose(); _renderTargetBitmap = null;
         _rtv?.Dispose(); _rtv = null;
         _dsv?.Dispose(); _dsv = null;
         _depthStencil?.Dispose(); _depthStencil = null;
@@ -1121,6 +1649,60 @@ float4 PS_Resolve(PSInput input) : SV_Target
         _fxaaRtv?.Dispose(); _fxaaRtv = null;
         _fxaaSrv?.Dispose(); _fxaaSrv = null;
         _fxaaTexture?.Dispose(); _fxaaTexture = null;
+
+        // 巨大影アトラスアセット破棄
+        _shadowAtlasTex?.Dispose(); _shadowAtlasTex = null;
+        _shadowAtlasRtv?.Dispose(); _shadowAtlasRtv = null;
+        _shadowAtlasSrv?.Dispose(); _shadowAtlasSrv = null;
+        _shadowAtlasDepthTex?.Dispose(); _shadowAtlasDepthTex = null;
+        _shadowAtlasDsv?.Dispose(); _shadowAtlasDsv = null;
+    }
+
+    private void DisposeResources()
+    {
+        foreach (var pair in _d3dEffects)
+        {
+            try { pair.Value.Effect.Dispose(); } catch { }
+        }
+        _d3dEffects = new();
+
+        _objModelRenderer?.Dispose();
+        _objModelRenderer = null;
+
+        _renderTarget?.Dispose(); _renderTarget = null;
+        _vs?.Dispose(); _vs = null;
+        _psOpaque?.Dispose(); _psOpaque = null;
+        _psOIT?.Dispose(); _psOIT = null;
+        _psSemiTrans?.Dispose(); _psSemiTrans = null;
+        _psShadowCube?.Dispose(); _psShadowCube = null;
+        _resolveVs?.Dispose(); _resolveVs = null;
+        _resolvePs?.Dispose(); _resolvePs = null;
+        _vsFxaa?.Dispose(); _vsFxaa = null;
+        _psFxaa?.Dispose(); _psFxaa = null;
+        _inputLayout?.Dispose(); _inputLayout = null;
+        _resolveInputLayout?.Dispose(); _resolveInputLayout = null;
+        _vertexBuffer?.Dispose(); _vertexBuffer = null;
+        _resolveVertexBuffer?.Dispose(); _resolveVertexBuffer = null;
+        _cbPerObject?.Dispose(); _cbPerObject = null;
+        _cbLighting?.Dispose(); _cbLighting = null;
+        _cbFxaa?.Dispose(); _cbFxaa = null;
+        _samplerPoint?.Dispose(); _samplerPoint = null;
+        _samplerLinear?.Dispose(); _samplerLinear = null;
+        _blendStateOpaque?.Dispose(); _blendStateOpaque = null;
+        _blendStateNoColor?.Dispose(); _blendStateNoColor = null;
+        _blendStateOIT?.Dispose(); _blendStateOIT = null;
+        _blendStateResolve?.Dispose(); _blendStateResolve = null;
+        _blendStateFxaa?.Dispose(); _blendStateFxaa = null;
+        _depthStateOpaque?.Dispose(); _depthStateOpaque = null;
+        _depthStateOIT?.Dispose(); _depthStateOIT = null;
+        _depthStateSemiTrans?.Dispose(); _depthStateSemiTrans = null;
+        _depthStateSemiBack?.Dispose(); _depthStateSemiBack = null;
+        _depthStateSemiFront?.Dispose(); _depthStateSemiFront = null;
+        _depthStateDisabled?.Dispose(); _depthStateDisabled = null;
+        _rasterizerState?.Dispose(); _rasterizerState = null;
+
+        _d3dDevicePointer = IntPtr.Zero;
+        _d3dContextPointer = IntPtr.Zero;
     }
 
     public void Dispose()
@@ -1128,43 +1710,8 @@ float4 PS_Resolve(PSInput input) : SV_Target
         if (_disposed) return;
         _disposed = true;
 
-        foreach (var effect in _allCreatedEffects)
-        {
-            effect.Dispose();
-        }
-        _allCreatedEffects.Clear();
-        // Clear ConditionalWeakTable entries? They will be cleared by GC.
-
         DisposeTargets();
-        _renderTarget?.Dispose(); _renderTarget = null;
-        _vs?.Dispose();
-        _psOpaque?.Dispose();
-        _psOIT?.Dispose();
-        _psSemiTrans?.Dispose();
-        _resolveVs?.Dispose();
-        _resolvePs?.Dispose();
-        _vsFxaa?.Dispose();
-        _psFxaa?.Dispose();
-        _inputLayout?.Dispose();
-        _resolveInputLayout?.Dispose();
-        _vertexBuffer?.Dispose();
-        _resolveVertexBuffer?.Dispose();
-        _cbPerObject?.Dispose();
-        _cbFxaa?.Dispose();
-        _samplerPoint?.Dispose();
-        _samplerLinear?.Dispose();
-        _blendStateOpaque?.Dispose();
-        _blendStateNoColor?.Dispose();
-        _blendStateOIT?.Dispose();
-        _blendStateResolve?.Dispose();
-        _blendStateFxaa?.Dispose();
-        _depthStateOpaque?.Dispose();
-        _depthStateOIT?.Dispose();
-        _depthStateSemiTrans?.Dispose();
-        _depthStateSemiBack?.Dispose();
-        _depthStateSemiFront?.Dispose();
-        _depthStateDisabled?.Dispose();
-        _rasterizerState?.Dispose();
+        DisposeResources();
     }
 }
 
@@ -1175,26 +1722,19 @@ internal sealed class RenderItem
     public float PixelWidth { get; init; }
     public float PixelHeight { get; init; }
 
-    /// <summary>バウンディングボックスの中心X (画像空間座標)</summary>
     public float BoundsCenterX { get; init; }
-    /// <summary>バウンディングボックスの中心Y (画像空間座標)</summary>
     public float BoundsCenterY { get; init; }
 
     public float Opacity { get; init; } = 1f;
 
-    /// <summary>YMM4 のレイヤー番号 (Layer小=奥, Layer大=手前)</summary>
     public int Layer { get; init; }
 
-    // ── D3Dエフェクト関連 ──
-
-    /// <summary>D3Dエフェクトの VideoEffect (ID3DVideoEffect 実装)</summary>
     public ID3DVideoEffect? D3DVideoEffect { get; init; }
     public YukkuriMovieMaker.Project.Items.IVideoItem? OriginalItem { get; init; }
 
-    /// <summary>アイテム内の現在フレーム位置</summary>
     public long ItemFrame { get; init; }
-    /// <summary>アイテムの長さ（フレーム数）</summary>
     public long ItemLength { get; init; }
-    /// <summary>FPS</summary>
     public int Fps { get; init; }
+
+    public List<ObjModelData>? ObjModels { get; init; }
 }

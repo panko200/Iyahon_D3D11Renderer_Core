@@ -3,24 +3,65 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="clr-namespace:Iyahon_D3D11Renderer_Core"
              xmlns:c="clr-namespace:YukkuriMovieMaker.Controls;assembly=YukkuriMovieMaker.Controls">
-  <StackPanel Margin="5">
+    <StackPanel Margin="5">
 
-    <Grid Margin="0,5">
-      <Label Content="半透明描画モード" VerticalAlignment="Center"/>
-      <c:EnumComboBox Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=TransparencyMode}"
+        <Grid Margin="0,5">
+            <Label Content="半透明描画モード" VerticalAlignment="Center"/>
+            <c:EnumComboBox Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=TransparencyMode}"
                       EnumType="{x:Type local:TransparencyMode}"
                       Width="280" HorizontalAlignment="Right"/>
-    </Grid>
+        </Grid>
 
-    <Grid Margin="0,5">
-      <Label Content="標準モード層数" VerticalAlignment="Center"/>
-      <c:EnumComboBox Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=StandardDepthLayerCount}"
+        <Grid Margin="0,5">
+            <Label Content="標準モード層数" VerticalAlignment="Center"/>
+            <c:EnumComboBox Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=StandardDepthLayerCount}"
                       EnumType="{x:Type local:StandardDepthLayerCount}"
                       Width="280" HorizontalAlignment="Right"/>
-    </Grid>
+        </Grid>
 
-    <TextBlock Text="「標準」: depth判定ベースの半透明合成。AA有効。&#x0a;「標準モード層数」: 2/4/8を選択（既定:4層）。&#x0a;「OIT」: 順序非依存の半透明合成。前後関係は近似的。AA無効(Aliased)+FXAA適用。"
+        <TextBlock Text="「標準」: depth判定ベースの半透明合成。AA有効。&#x0a;「標準モード層数」: 2/4/8を選択（既定:4層）。&#x0a;「OIT」: 順序非依存の半透明合成。前後関係は近似的。AA無効(Aliased)+FXAA適用。"
+               Foreground="Gray" Margin="0,2,0,10" FontSize="11" TextWrapping="Wrap"/>
+
+        <Separator Margin="0,5"/>
+
+        <TextBlock Text="D3D11光源設定" FontWeight="Bold" FontSize="13" Margin="0,5,0,5"/>
+
+        <TextBlock Text="タイムラインにD3D11光源（図形）を配置すると、簡易ライティングは自動的に無効化され、D3D11光源のみが使用されます。光源が存在しない場合は従来の簡易ライティングが適用されます。"
                Foreground="Gray" Margin="0,2,0,5" FontSize="11" TextWrapping="Wrap"/>
 
-  </StackPanel>
+        <Grid Margin="0,5">
+            <Label Content="影を有効にする" VerticalAlignment="Center"/>
+            <CheckBox IsChecked="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=EnableShadow}"
+                HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0"/>
+        </Grid>
+
+        <Grid Margin="0,5">
+            <Label Content="影の画質（解像度）" VerticalAlignment="Center"/>
+            <c:EnumComboBox Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=ShadowResolution}"
+                      EnumType="{x:Type local:ShadowResolution}"
+                      Width="280" HorizontalAlignment="Right"/>
+        </Grid>
+
+        <!-- ★追加：Soft Shadow トグルチェックボックス -->
+        <Grid Margin="0,5">
+            <Label Content="影をぼかす (Soft Shadow)" VerticalAlignment="Center"/>
+            <CheckBox IsChecked="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=EnableSoftShadow}"
+                HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0"/>
+        </Grid>
+
+        <Grid Margin="0,5">
+            <Label Content="環境光の強度" VerticalAlignment="Center"/>
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Slider Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=AmbientIntensity}"
+                Minimum="0" Maximum="1" Width="200" VerticalAlignment="Center"
+                TickFrequency="0.05" IsSnapToTickEnabled="False"/>
+                <TextBlock Text="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=AmbientIntensity, StringFormat=F2}"
+                   Width="40" TextAlignment="Right" VerticalAlignment="Center" Margin="5,0,10,0"/>
+            </StackPanel>
+        </Grid>
+
+        <TextBlock Text="「影を有効にする」: シャドウマッピングによる影の描画を有効化します。&#x0a;「影の画質」: 影テクスチャの細かさを設定します。&#x0a;「影をぼかす」: チェックを外すと影がクッキリして動作が劇的に軽くなります。編集時はOFFを推奨します。&#x0a;「環境光の強度」: シーン全体の最低限の明るさを設定します。"
+               Foreground="Gray" Margin="0,2,0,5" FontSize="11" TextWrapping="Wrap"/>
+
+    </StackPanel>
 </UserControl>

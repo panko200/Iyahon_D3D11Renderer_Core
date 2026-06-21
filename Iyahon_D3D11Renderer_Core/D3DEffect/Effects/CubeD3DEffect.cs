@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using Iyahon_D3D11Renderer_Core.D3DEffect;
+using Iyahon_D3D11Renderer_Core.Lighting;
 using Vortice.Direct3D;
 using Vortice.Direct3D11;
 using Vortice.DXGI;
@@ -43,6 +45,8 @@ public sealed class CubeD3DEffect : ID3DEffect
         public float LightIntensity;       // 4
         public float _pad0;                // 4
         public float _pad1;                // 4  -> 160 bytes (16x OK)
+        public Vector3 ShadowLightPos;
+        public float ShadowLightRange;
     }
 
     private bool _initialized;
@@ -53,6 +57,7 @@ public sealed class CubeD3DEffect : ID3DEffect
     private ID3D11Buffer? _indexBuffer;
     private ID3D11Buffer? _cbBuffer;
     private int _indexCount;
+    private ID3D11PixelShader? _psShadow; // ★追加
 
     private const string ShaderSource = @"
 cbuffer CubeCb : register(b0)
@@ -67,10 +72,13 @@ cbuffer CubeCb : register(b0)
     float LightIntensity;
     float _pad0;
     float _pad1;
+    float3 ShadowLightPos;
+    float ShadowLightRange;
 };
+" + LightingShaderCode.HlslCode + @"
 
 struct VSInput  { float3 Pos : POSITION; float2 UV : TEXCOORD0; float3 Norm : NORMAL; };
-struct PSInput  { float4 Pos : SV_POSITION; float2 UV : TEXCOORD0; float3 Norm : TEXCOORD1; float Op : TEXCOORD2; };
+struct PSInput  { float4 Pos : SV_POSITION; float2 UV : TEXCOORD0; float3 Norm : TEXCOORD1; float Op : TEXCOORD2; float3 WorldPos : TEXCOORD3; };
 
 Texture2D    gTex    : register(t0);
 SamplerState gSampler: register(s0);
@@ -79,11 +87,11 @@ PSInput VS_Cube(VSInput input)
 {
     PSInput o;
     float3 scaledPos = input.Pos * float3(1.0, 1.0, DepthScale);
-    float4 pos = mul(float4(scaledPos, 1.0), WorldMatrix);
+    float4 worldPos = mul(float4(scaledPos, 1.0), WorldMatrix);
 
     if (HalfWidth > 0.0)
     {
-        // Screen-space transform (DepthSortRenderer)
+        float4 pos = mul(worldPos, ViewProjMatrix);
         o.Pos.x =  pos.x / HalfWidth;
         o.Pos.y = -pos.y / HalfHeight;
         o.Pos.z = -pos.z / 200000.0 + 0.5 * pos.w;
@@ -91,13 +99,13 @@ PSInput VS_Cube(VSInput input)
     }
     else
     {
-        // ViewProjection transform (3D Preview)
-        o.Pos = mul(pos, ViewProjMatrix);
+        o.Pos = mul(worldPos, ViewProjMatrix);
     }
 
     o.UV = input.UV;
     o.Norm = mul(float4(input.Norm, 0.0), WorldMatrix).xyz;
     o.Op = Opacity;
+    o.WorldPos = worldPos.xyz;
     return o;
 }
 
@@ -107,13 +115,36 @@ float4 PS_Cube(PSInput input) : SV_Target
     c *= input.Op;
     clip(c.a - AlphaThreshold);
 
-    float3 lightDir = normalize(float3(0.3, -0.5, -1.0));
-    float3 n = normalize(input.Norm);
-    float ndl = saturate(dot(n, -lightDir));
-    float lighting = lerp(1.0, 0.5 + 0.5 * ndl, LightIntensity);
-    c.rgb *= lighting;
+    if (UseSimpleLight > 0.5)
+    {
+        float lgtVal = CalcSimpleLgtEff(input.Norm, LightIntensity);
+        c.rgb *= lgtVal;
+    }
+    else
+    {
+        float3 lgtVal = CalcDynamicLgtEff(input.Norm, input.WorldPos);
+        c.rgb *= lgtVal;
+    }
 
     return c;
+}
+
+float4 PS_Cube_Shadow(PSInput input) : SV_Target
+{
+    float4 c = gTex.Sample(gSampler, input.UV);
+    c *= input.Op;
+    clip(c.a - AlphaThreshold);
+
+    if (ShadowLightRange > 0.1)
+    {
+        float dist = length(input.WorldPos - ShadowLightPos);
+        float normDist = dist / max(ShadowLightRange, 1.0);
+        return float4(normDist, 0.0, 0.0, 1.0);
+    }
+    else
+    {
+        return float4(input.Pos.z, 0.0, 0.0, 1.0);
+    }
 }
 ";
 
@@ -145,6 +176,13 @@ float4 PS_Cube(PSInput input) : SV_Target
                 "ps_5_0", Vortice.D3DCompiler.ShaderFlags.None, Vortice.D3DCompiler.EffectFlags.None);
             _ps = device.CreatePixelShader(psBlob);
             psBlob.Dispose();
+
+            var psShadowBlob = Vortice.D3DCompiler.Compiler.Compile(
+                ShaderSource, "PS_Cube_Shadow", "cube_shader",
+                Array.Empty<ShaderMacro>(), null,
+                "ps_5_0", Vortice.D3DCompiler.ShaderFlags.None, Vortice.D3DCompiler.EffectFlags.None);
+            _psShadow = device.CreatePixelShader(psShadowBlob);
+            psShadowBlob.Dispose();
 
             _cbBuffer = device.CreateBuffer(new BufferDescription(
                 Marshal.SizeOf<CubeCb>(), BindFlags.ConstantBuffer));
@@ -246,6 +284,8 @@ float4 PS_Cube(PSInput input) : SV_Target
             AlphaThreshold = renderContext.AlphaThreshold,
             DepthScale = DepthScale,
             LightIntensity = LightIntensity,
+            ShadowLightPos = renderContext.ShadowLightPos,       // ★設定
+            ShadowLightRange = renderContext.ShadowLightRange,   // ★設定
         };
 
         ctx.UpdateSubresource(ref cb, _cbBuffer!);
@@ -256,7 +296,7 @@ float4 PS_Cube(PSInput input) : SV_Target
         ctx.IASetPrimitiveTopology(PrimitiveTopology.TriangleList);
 
         ctx.VSSetShader(_vs);
-        ctx.PSSetShader(_ps);
+        ctx.PSSetShader(renderContext.IsShadowPass ? _psShadow : _ps); // ★シャドウパスなら影用PSに変更
         ctx.VSSetConstantBuffer(0, _cbBuffer);
         ctx.PSSetConstantBuffer(0, _cbBuffer);
         ctx.PSSetShaderResource(0, inputSrv);
@@ -268,6 +308,7 @@ float4 PS_Cube(PSInput input) : SV_Target
     {
         _vs?.Dispose();
         _ps?.Dispose();
+        _psShadow?.Dispose();
         _inputLayout?.Dispose();
         _vertexBuffer?.Dispose();
         _indexBuffer?.Dispose();
