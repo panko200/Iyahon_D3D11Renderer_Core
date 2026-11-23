@@ -5,6 +5,7 @@ using System.Windows.Media;
 using YukkuriMovieMaker.Commons;
 using YukkuriMovieMaker.Controls;
 using YukkuriMovieMaker.Exo;
+using YukkuriMovieMaker.ItemEditor.CustomVisibilityAttributes;
 using YukkuriMovieMaker.Player.Video;
 using YukkuriMovieMaker.Plugin.Shape;
 using YukkuriMovieMaker.Project;
@@ -55,23 +56,23 @@ internal class D3DLightShapeParameter : ShapeParameterBase
         get => showGizmo;
         set => Set(ref showGizmo, value);
     }
-    private bool showGizmo = false; // 初回配置時等に視覚化され、分かりやすいようにデフォルト値を true に設定
+    private bool showGizmo = false;
 
-    // ── 方向（ディレクショナルライト用） ──
+    // ── 方向（ディレクショナル / スポット / エリア共用） ──
 
-    [Display(GroupName = "方向（ディレクショナル）", Name = "方向X")]
+    [Display(GroupName = "方向（ディレクショナル/スポット/エリア）", Name = "方向X")]
     [AnimationSlider("F2", "", -1, 1)]
     public Animation DirectionX { get; } = new Animation(0.3, -1, 1);
 
-    [Display(GroupName = "方向（ディレクショナル）", Name = "方向Y")]
+    [Display(GroupName = "方向（ディレクショナル/スポット/エリア）", Name = "方向Y")]
     [AnimationSlider("F2", "", -1, 1)]
     public Animation DirectionY { get; } = new Animation(-0.7, -1, 1);
 
-    [Display(GroupName = "方向（ディレクショナル）", Name = "方向Z")]
+    [Display(GroupName = "方向（ディレクショナル/スポット/エリア）", Name = "方向Z")]
     [AnimationSlider("F2", "", -1, 1)]
     public Animation DirectionZ { get; } = new Animation(-1.0, -1, 1);
 
-    // ── 範囲（ポイント/スポット） ──
+    // ── 範囲（ポイント/スポット/エリア） ──
 
     [Display(GroupName = "ポイント/スポット設定", Name = "影響範囲")]
     [AnimationSlider("F0", "px", 0, 10000)]
@@ -110,11 +111,23 @@ internal class D3DLightShapeParameter : ShapeParameterBase
 
     [Display(GroupName = "影設定", Name = "影の濃さ")]
     [AnimationSlider("F2", "", 0, 1)]
+    [ShowPropertyEditorWhen(nameof(CastShadow), true)]
     public Animation ShadowIntensity { get; } = new Animation(0.5, 0, 1);
 
     [Display(GroupName = "影設定", Name = "シャドウバイアス")]
     [AnimationSlider("F5", "", 0.00001, 0.01)]
+    [ShowPropertyEditorWhen(nameof(CastShadow), true)]
     public Animation ShadowBias { get; } = new Animation(0.0005, 0.00001, 0.1);
+
+    [Display(GroupName = "影設定", Name = "法線バイアス", Description = "物体の法線方向にサンプリング位置をずらしてシャドウアクネ（縞模様ノイズ）を防ぎます。")]
+    [AnimationSlider("F2", "px", 0, 5)]
+    [ShowPropertyEditorWhen(nameof(CastShadow), true)]
+    public Animation ShadowNormalBias { get; } = new Animation(1.5, 0, 10);
+
+    [Display(GroupName = "影設定", Name = "影の柔らかさ", Description = "ソフトシャドウ有効時のぼかし半径倍率です。")]
+    [AnimationSlider("F2", "", 0, 3)]
+    [ShowPropertyEditorWhen(nameof(CastShadow), true)]
+    public Animation ShadowSoftness { get; } = new Animation(1.0, 0, 5);
 
     // ── コンストラクタ ──
 
@@ -147,6 +160,8 @@ internal class D3DLightShapeParameter : ShapeParameterBase
         yield return AreaHeight;
         yield return ShadowIntensity;
         yield return ShadowBias;
+        yield return ShadowNormalBias;
+        yield return ShadowSoftness;
     }
 
     protected override void LoadSharedData(SharedDataStore store)
@@ -166,7 +181,7 @@ internal class D3DLightShapeParameter : ShapeParameterBase
         public LightType LightType { get; set; }
         public Color LightColor { get; set; }
         public Animation Intensity { get; } = new Animation(1.0, 0, 100);
-        public bool ShowGizmo { get; set; } // ★追加
+        public bool ShowGizmo { get; set; }
         public Animation DirectionX { get; } = new Animation(0.3, -1, 1);
         public Animation DirectionY { get; } = new Animation(-0.7, -1, 1);
         public Animation DirectionZ { get; } = new Animation(-1.0, -1, 1);
@@ -178,13 +193,15 @@ internal class D3DLightShapeParameter : ShapeParameterBase
         public bool CastShadow { get; set; }
         public Animation ShadowIntensity { get; } = new Animation(0.5, 0, 1);
         public Animation ShadowBias { get; } = new Animation(0.0005, 0.00001, 0.1);
+        public Animation ShadowNormalBias { get; } = new Animation(1.5, 0, 10);
+        public Animation ShadowSoftness { get; } = new Animation(1.0, 0, 5);
 
         public SharedData(D3DLightShapeParameter p)
         {
             LightType = p.LightType;
             LightColor = p.LightColor;
             Intensity.CopyFrom(p.Intensity);
-            ShowGizmo = p.ShowGizmo; // ★追加
+            ShowGizmo = p.ShowGizmo;
             DirectionX.CopyFrom(p.DirectionX);
             DirectionY.CopyFrom(p.DirectionY);
             DirectionZ.CopyFrom(p.DirectionZ);
@@ -196,6 +213,8 @@ internal class D3DLightShapeParameter : ShapeParameterBase
             CastShadow = p.CastShadow;
             ShadowIntensity.CopyFrom(p.ShadowIntensity);
             ShadowBias.CopyFrom(p.ShadowBias);
+            ShadowNormalBias.CopyFrom(p.ShadowNormalBias);
+            ShadowSoftness.CopyFrom(p.ShadowSoftness);
         }
 
         public void CopyTo(D3DLightShapeParameter p)
@@ -203,7 +222,7 @@ internal class D3DLightShapeParameter : ShapeParameterBase
             p.LightType = LightType;
             p.LightColor = LightColor;
             p.Intensity.CopyFrom(Intensity);
-            p.ShowGizmo = ShowGizmo; // ★追加
+            p.ShowGizmo = ShowGizmo;
             p.DirectionX.CopyFrom(DirectionX);
             p.DirectionY.CopyFrom(DirectionY);
             p.DirectionZ.CopyFrom(DirectionZ);
@@ -215,6 +234,8 @@ internal class D3DLightShapeParameter : ShapeParameterBase
             p.CastShadow = CastShadow;
             p.ShadowIntensity.CopyFrom(ShadowIntensity);
             p.ShadowBias.CopyFrom(ShadowBias);
+            p.ShadowNormalBias.CopyFrom(ShadowNormalBias);
+            p.ShadowSoftness.CopyFrom(ShadowSoftness);
         }
     }
 }

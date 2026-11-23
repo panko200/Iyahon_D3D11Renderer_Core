@@ -2,66 +2,359 @@
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="clr-namespace:Iyahon_D3D11Renderer_Core"
+             xmlns:ctrl="clr-namespace:Iyahon_D3D11Renderer_Core.Controls"
              xmlns:c="clr-namespace:YukkuriMovieMaker.Controls;assembly=YukkuriMovieMaker.Controls">
-    <StackPanel Margin="5">
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <StackPanel Margin="5">
 
-        <Grid Margin="0,5">
-            <Label Content="半透明描画モード" VerticalAlignment="Center"/>
-            <c:EnumComboBox Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=TransparencyMode}"
-                      EnumType="{x:Type local:TransparencyMode}"
-                      Width="280" HorizontalAlignment="Right"/>
-        </Grid>
+            <TextBlock Text="画質プリセット（一括切替）" FontWeight="Bold" FontSize="13" Margin="0,2,0,5"/>
+            <UniformGrid Columns="4" Margin="0,2,0,8">
+                <Button Content="軽量" Tag="low" Click="PresetButton_Click" Margin="2" Padding="6,4" ToolTip="SSAO/GI/SSR/BloomをOFFにし最速描画します"/>
+                <Button Content="標準" Tag="standard" Click="PresetButton_Click" Margin="2" Padding="6,4" ToolTip="FXAA + GTAO + Bloomのバランス設定"/>
+                <Button Content="高画質 (推奨)" Tag="high" Click="PresetButton_Click" Margin="2" Padding="6,4" ToolTip="PBR + GTAO + SSGI + SSR + コンタクトシャドウ + FXAA"/>
+                <Button Content="シネマティック" Tag="cinematic" Click="PresetButton_Click" Margin="2" Padding="6,4" ToolTip="SSAA 1.5x + SSR + SSGI + Ultra PCFの最高画質設定"/>
+            </UniformGrid>
 
-        <Grid Margin="0,5">
-            <Label Content="標準モード層数" VerticalAlignment="Center"/>
-            <c:EnumComboBox Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=StandardDepthLayerCount}"
-                      EnumType="{x:Type local:StandardDepthLayerCount}"
-                      Width="280" HorizontalAlignment="Right"/>
-        </Grid>
+            <Separator Margin="0,5"/>
 
-        <TextBlock Text="「標準」: depth判定ベースの半透明合成。AA有効。&#x0a;「標準モード層数」: 2/4/8を選択（既定:4層）。&#x0a;「OIT」: 順序非依存の半透明合成。前後関係は近似的。AA無効(Aliased)+FXAA適用。"
-               Foreground="Gray" Margin="0,2,0,10" FontSize="11" TextWrapping="Wrap"/>
+            <Grid Margin="0,5">
+                <Label Content="半透明描画モード" VerticalAlignment="Center"/>
+                <c:EnumComboBox Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=TransparencyMode}"
+                          EnumType="{x:Type local:TransparencyMode}"
+                          Width="280" HorizontalAlignment="Right"/>
+            </Grid>
 
-        <Separator Margin="0,5"/>
+            <Grid Margin="0,5">
+                <Label Content="標準モード層数" VerticalAlignment="Center"/>
+                <c:EnumComboBox Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=StandardDepthLayerCount}"
+                          EnumType="{x:Type local:StandardDepthLayerCount}"
+                          Width="280" HorizontalAlignment="Right"/>
+            </Grid>
 
-        <TextBlock Text="D3D11光源設定" FontWeight="Bold" FontSize="13" Margin="0,5,0,5"/>
+            <Grid Margin="0,5">
+                <Label Content="アンチエイリアシング（Standard/OIT共通）" VerticalAlignment="Center"/>
+                <c:EnumComboBox Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=AntiAliasing}"
+                          EnumType="{x:Type local:AntiAliasingMode}"
+                          Width="280" HorizontalAlignment="Right"/>
+            </Grid>
 
-        <TextBlock Text="タイムラインにD3D11光源（図形）を配置すると、簡易ライティングは自動的に無効化され、D3D11光源のみが使用されます。光源が存在しない場合は従来の簡易ライティングが適用されます。"
-               Foreground="Gray" Margin="0,2,0,5" FontSize="11" TextWrapping="Wrap"/>
+            <TextBlock Text="「標準」: depth判定ベースの半透明合成。「OIT」: 順序非依存の半透明合成。&#x0a;「アンチエイリアシング」: FXAAのほか、内部解像度を引き上げて描画する SSAA 1.5x / 2.0x が Standard・OIT の両方で利用可能です。"
+                   Foreground="Gray" Margin="0,2,0,10" FontSize="11" TextWrapping="Wrap"/>
 
-        <Grid Margin="0,5">
-            <Label Content="影を有効にする" VerticalAlignment="Center"/>
-            <CheckBox IsChecked="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=EnableShadow}"
-                HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0"/>
-        </Grid>
+            <Separator Margin="0,5"/>
 
-        <Grid Margin="0,5">
-            <Label Content="影の画質（解像度）" VerticalAlignment="Center"/>
-            <c:EnumComboBox Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=ShadowResolution}"
-                      EnumType="{x:Type local:ShadowResolution}"
-                      Width="280" HorizontalAlignment="Right"/>
-        </Grid>
+            <TextBlock Text="D3D11光源・シャドウ設定" FontWeight="Bold" FontSize="13" Margin="0,5,0,5"/>
 
-        <!-- ★追加：Soft Shadow トグルチェックボックス -->
-        <Grid Margin="0,5">
-            <Label Content="影をぼかす (Soft Shadow)" VerticalAlignment="Center"/>
-            <CheckBox IsChecked="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=EnableSoftShadow}"
-                HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0"/>
-        </Grid>
+            <TextBlock Text="タイムラインにD3D11光源（図形）を配置すると、簡易ライティングは自動的に無効化され、D3D11光源のみが使用されます。光源数・影付き光源数の上限はありません（動的バッファ拡張＋VRAM予算内での自動解像度調整対応）。"
+                   Foreground="Gray" Margin="0,2,0,5" FontSize="11" TextWrapping="Wrap"/>
 
-        <Grid Margin="0,5">
-            <Label Content="環境光の強度" VerticalAlignment="Center"/>
-            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                <Slider Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=AmbientIntensity}"
-                Minimum="0" Maximum="1" Width="200" VerticalAlignment="Center"
-                TickFrequency="0.05" IsSnapToTickEnabled="False"/>
-                <TextBlock Text="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=AmbientIntensity, StringFormat=F2}"
-                   Width="40" TextAlignment="Right" VerticalAlignment="Center" Margin="5,0,10,0"/>
-            </StackPanel>
-        </Grid>
+            <Grid Margin="0,5">
+                <Label Content="影を有効にする" VerticalAlignment="Center"/>
+                <CheckBox IsChecked="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=EnableShadow}"
+                    HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0"/>
+            </Grid>
 
-        <TextBlock Text="「影を有効にする」: シャドウマッピングによる影の描画を有効化します。&#x0a;「影の画質」: 影テクスチャの細かさを設定します。&#x0a;「影をぼかす」: チェックを外すと影がクッキリして動作が劇的に軽くなります。編集時はOFFを推奨します。&#x0a;「環境光の強度」: シーン全体の最低限の明るさを設定します。"
-               Foreground="Gray" Margin="0,2,0,5" FontSize="11" TextWrapping="Wrap"/>
+            <Grid Margin="0,5">
+                <Label Content="影の画質（最大解像度）" VerticalAlignment="Center"/>
+                <c:EnumComboBox Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=ShadowResolution}"
+                          EnumType="{x:Type local:ShadowResolution}"
+                          Width="280" HorizontalAlignment="Right"/>
+            </Grid>
 
-    </StackPanel>
+            <Grid Margin="0,5">
+                <Label Content="影をぼかす (Soft Shadow / PCSS)" VerticalAlignment="Center"/>
+                <CheckBox IsChecked="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=EnableSoftShadow}"
+                    HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0"/>
+            </Grid>
+
+            <Grid Margin="0,5">
+                <Label Content="影のフィルタ品質" VerticalAlignment="Center"/>
+                <c:EnumComboBox Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=ShadowQuality}"
+                          EnumType="{x:Type local:ShadowQuality}"
+                          Width="280" HorizontalAlignment="Right"/>
+            </Grid>
+
+            <Grid Margin="0,5">
+                <Label Content="影のぼかし半径倍率" VerticalAlignment="Center"/>
+                <ctrl:NumericTextBoxSlider Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=ShadowSoftness, Mode=TwoWay}"
+                                           Minimum="0.1" Maximum="4.0" TickFrequency="0.1" SmallChange="0.05" StringFormat="0.00"
+                                           SliderWidth="200" TextBoxWidth="56" HorizontalAlignment="Right" Margin="0,0,10,0"/>
+            </Grid>
+
+            <Grid Margin="0,5">
+                <Label Content="ディレクショナル影カスケード数" VerticalAlignment="Center"/>
+                <c:EnumComboBox Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=ShadowCascadeCount}"
+                          EnumType="{x:Type local:ShadowCascadeCount}"
+                          Width="280" HorizontalAlignment="Right"/>
+            </Grid>
+
+            <Grid Margin="0,5">
+                <Label Content="影用VRAM上限" VerticalAlignment="Center"/>
+                <c:EnumComboBox Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=ShadowMemoryBudget}"
+                          EnumType="{x:Type local:ShadowMemoryBudget}"
+                          Width="280" HorizontalAlignment="Right"/>
+            </Grid>
+
+            <Grid Margin="0,5">
+                <Label Content="環境光の強度" VerticalAlignment="Center"/>
+                <ctrl:NumericTextBoxSlider Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=AmbientIntensity, Mode=TwoWay}"
+                                           Minimum="0" Maximum="1" TickFrequency="0.05" SmallChange="0.01" StringFormat="0.00"
+                                           SliderWidth="200" TextBoxWidth="56" HorizontalAlignment="Right" Margin="0,0,10,0"/>
+            </Grid>
+
+            <TextBlock Text="「影をぼかす」: OFFでもハードウェア2x2バイリニアPCFによりジャギーを抑えつつ超高速に描画します。ONにするとIGN回転Vogel Disk PCFおよびエリア光源のPCSS（距離に応じた可変ボケ）が有効になります。&#x0a;「カスケード数」: 平行光源の影を近・中・遠距離で分割して手前の影を圧倒的に高精細にします（既定: 3段）。&#x0a;「影用VRAM上限」: 影オフ時や影光源0個時は0MBです。多灯時に上限を超えると自動で遠くのライト解像度を下げて全影を維持します。"
+                   Foreground="Gray" Margin="0,2,0,10" FontSize="11" TextWrapping="Wrap"/>
+
+            <Separator Margin="0,5"/>
+
+            <TextBlock Text="現代3Dレンダリング（PBR / GTAO / SSGI / Bloom / HDR）" FontWeight="Bold" FontSize="13" Margin="0,5,0,5"/>
+
+            <Grid Margin="0,5">
+                <Label Content="物理ベース質感（PBR＋簡易IBL環境反射）" VerticalAlignment="Center"/>
+                <CheckBox IsChecked="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=EnablePbr}"
+                    HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0"/>
+            </Grid>
+
+            <Grid Margin="0,5">
+                <Label Content="IBL環境反射・半球ライト強度" VerticalAlignment="Center"/>
+                <ctrl:NumericTextBoxSlider Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=IblIntensity, Mode=TwoWay}"
+                                           Minimum="0" Maximum="2" TickFrequency="0.05" SmallChange="0.05" StringFormat="0.00"
+                                           SliderWidth="200" TextBoxWidth="56" HorizontalAlignment="Right" Margin="0,0,10,0"/>
+            </Grid>
+
+            <Grid Margin="0,5">
+                <Label Content="既定の粗さ (Roughness)" VerticalAlignment="Center"/>
+                <ctrl:NumericTextBoxSlider Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=DefaultRoughness, Mode=TwoWay}"
+                                           Minimum="0.05" Maximum="1.0" TickFrequency="0.05" SmallChange="0.01" StringFormat="0.00"
+                                           SliderWidth="200" TextBoxWidth="56" HorizontalAlignment="Right" Margin="0,0,10,0"/>
+            </Grid>
+
+            <Grid Margin="0,5">
+                <Label Content="角・隙間の陰影（GTAO / アンビエントオクルージョン）" VerticalAlignment="Center"/>
+                <CheckBox IsChecked="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=EnableSsao}"
+                    HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0"/>
+            </Grid>
+
+            <Grid Margin="0,5">
+                <Label Content="GTAO 強度" VerticalAlignment="Center"/>
+                <ctrl:NumericTextBoxSlider Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=SsaoIntensity, Mode=TwoWay}"
+                                           Minimum="0" Maximum="2.5" TickFrequency="0.05" SmallChange="0.05" StringFormat="0.00"
+                                           SliderWidth="200" TextBoxWidth="56" HorizontalAlignment="Right" Margin="0,0,10,0"/>
+            </Grid>
+
+            <Grid Margin="0,5">
+                <Label Content="GTAO 半径 (px)" VerticalAlignment="Center"/>
+                <ctrl:NumericTextBoxSlider Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=SsaoRadius, Mode=TwoWay}"
+                                           Minimum="10" Maximum="300" TickFrequency="5" SmallChange="5" LargeChange="20" IsInteger="True" StringFormat="0"
+                                           SliderWidth="200" TextBoxWidth="56" HorizontalAlignment="Right" Margin="0,0,10,0"/>
+            </Grid>
+
+            <Grid Margin="0,5">
+                <Label Content="間接光バウンス（SSGI）" VerticalAlignment="Center"/>
+                <CheckBox IsChecked="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=EnableSsgi}"
+                    HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0"/>
+            </Grid>
+
+            <Grid Margin="0,5">
+                <Label Content="SSGI 強度" VerticalAlignment="Center"/>
+                <ctrl:NumericTextBoxSlider Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=SsgiIntensity, Mode=TwoWay}"
+                                           Minimum="0" Maximum="2.5" TickFrequency="0.05" SmallChange="0.05" StringFormat="0.00"
+                                           SliderWidth="200" TextBoxWidth="56" HorizontalAlignment="Right" Margin="0,0,10,0"/>
+            </Grid>
+
+            <Grid Margin="0,5">
+                <Label Content="HDR ブルーム（高輝度のにじみ）" VerticalAlignment="Center"/>
+                <CheckBox IsChecked="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=EnableBloom}"
+                    HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0"/>
+            </Grid>
+
+            <Grid Margin="0,5">
+                <Label Content="ブルーム閾値" VerticalAlignment="Center"/>
+                <ctrl:NumericTextBoxSlider Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=BloomThreshold, Mode=TwoWay}"
+                                           Minimum="0.2" Maximum="5.0" TickFrequency="0.05" SmallChange="0.05" StringFormat="0.00"
+                                           SliderWidth="200" TextBoxWidth="56" HorizontalAlignment="Right" Margin="0,0,10,0"/>
+            </Grid>
+
+            <Grid Margin="0,5">
+                <Label Content="ブルーム強度" VerticalAlignment="Center"/>
+                <ctrl:NumericTextBoxSlider Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=BloomIntensity, Mode=TwoWay}"
+                                           Minimum="0" Maximum="2.0" TickFrequency="0.05" SmallChange="0.05" StringFormat="0.00"
+                                           SliderWidth="200" TextBoxWidth="56" HorizontalAlignment="Right" Margin="0,0,10,0"/>
+            </Grid>
+
+            <Grid Margin="0,5">
+                <Label Content="トーンマッピング（HDR→階調圧縮）" VerticalAlignment="Center"/>
+                <c:EnumComboBox Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=ToneMapping}"
+                          EnumType="{x:Type local:ToneMappingMode}"
+                          Width="280" HorizontalAlignment="Right"/>
+            </Grid>
+
+            <Grid Margin="0,5">
+                <Label Content="露出 (EV)" VerticalAlignment="Center"/>
+                <ctrl:NumericTextBoxSlider Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=Exposure, Mode=TwoWay}"
+                                           Minimum="-3.0" Maximum="3.0" TickFrequency="0.1" SmallChange="0.05" StringFormat="0.00"
+                                           SliderWidth="200" TextBoxWidth="56" HorizontalAlignment="Right" Margin="0,0,10,0"/>
+            </Grid>
+
+            <Grid Margin="0,5">
+                <Label Content="HDRInjector 連携（実HDR FP16出力）" VerticalAlignment="Center"/>
+                <CheckBox IsChecked="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=EnableHdrInjectorIntegration}"
+                    HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0"/>
+            </Grid>
+
+            <Grid Margin="0,5">
+                <Label Content="HDR ピーク輝度倍率 (HDRInjector有効時)" VerticalAlignment="Center"/>
+                <ctrl:NumericTextBoxSlider Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=HdrPeakLuminance, Mode=TwoWay}"
+                                           Minimum="1.0" Maximum="12.5" TickFrequency="0.25" SmallChange="0.1" StringFormat="0.00"
+                                           SliderWidth="200" TextBoxWidth="56" HorizontalAlignment="Right" Margin="0,0,10,0"/>
+            </Grid>
+
+            <Grid Margin="0,5">
+                <Label Content="3Dモデル最大テクスチャ解像度" VerticalAlignment="Center"/>
+                <c:EnumComboBox Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=ModelMaxTextureSize}"
+                          EnumType="{x:Type local:ModelTextureLimit}"
+                          Width="280" HorizontalAlignment="Right"/>
+            </Grid>
+
+            <Separator Margin="0,5"/>
+
+            <TextBlock Text="スクリーン空間反射 (SSR) ＆ コンタクトシャドウ" FontWeight="Bold" FontSize="13" Margin="0,5,0,5"/>
+
+            <Grid Margin="0,5">
+                <Label Content="スクリーン空間反射 (SSR)" VerticalAlignment="Center"/>
+                <CheckBox IsChecked="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=EnableSsr}"
+                    HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0"/>
+            </Grid>
+
+            <Grid Margin="0,5">
+                <Label Content="SSR 反射強度" VerticalAlignment="Center"/>
+                <ctrl:NumericTextBoxSlider Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=SsrIntensity, Mode=TwoWay}"
+                                           Minimum="0" Maximum="2.0" TickFrequency="0.05" SmallChange="0.05" StringFormat="0.00"
+                                           SliderWidth="200" TextBoxWidth="56" HorizontalAlignment="Right" Margin="0,0,10,0"/>
+            </Grid>
+
+            <Grid Margin="0,5">
+                <Label Content="SSR 適用する最大粗さ (Roughness)" VerticalAlignment="Center"/>
+                <ctrl:NumericTextBoxSlider Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=SsrMaxRoughness, Mode=TwoWay}"
+                                           Minimum="0.1" Maximum="0.95" TickFrequency="0.05" SmallChange="0.01" StringFormat="0.00"
+                                           SliderWidth="200" TextBoxWidth="56" HorizontalAlignment="Right" Margin="0,0,10,0"/>
+            </Grid>
+
+            <Grid Margin="0,5">
+                <Label Content="コンタクトシャドウ（微細接地影）" VerticalAlignment="Center"/>
+                <CheckBox IsChecked="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=EnableContactShadow}"
+                    HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0"/>
+            </Grid>
+
+            <Grid Margin="0,5">
+                <Label Content="コンタクトシャドウ 強度" VerticalAlignment="Center"/>
+                <ctrl:NumericTextBoxSlider Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=ContactShadowIntensity, Mode=TwoWay}"
+                                           Minimum="0" Maximum="1.5" TickFrequency="0.05" SmallChange="0.05" StringFormat="0.00"
+                                           SliderWidth="200" TextBoxWidth="56" HorizontalAlignment="Right" Margin="0,0,10,0"/>
+            </Grid>
+
+            <Grid Margin="0,5">
+                <Label Content="コンタクトシャドウ レイ長さ (px)" VerticalAlignment="Center"/>
+                <ctrl:NumericTextBoxSlider Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=ContactShadowLength, Mode=TwoWay}"
+                                           Minimum="5" Maximum="200" TickFrequency="5" SmallChange="5" LargeChange="20" IsInteger="True" StringFormat="0"
+                                           SliderWidth="200" TextBoxWidth="56" HorizontalAlignment="Right" Margin="0,0,10,0"/>
+            </Grid>
+
+            <Separator Margin="0,5"/>
+
+            <TextBlock Text="環境マップ（HDRI 360° IBL ＆ スカイボックス）" FontWeight="Bold" FontSize="13" Margin="0,5,0,5"/>
+
+            <Grid Margin="0,5">
+                <Label Content="HDRI / 360° パノラマ画像" VerticalAlignment="Center"/>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <TextBox Text="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=EnvironmentMapPath}"
+                             Width="180" VerticalAlignment="Center" IsReadOnly="True" Margin="0,0,4,0"/>
+                    <Button Content="参照..." Click="BrowseEnvMap_Click" Padding="8,2" Margin="0,0,4,0"/>
+                    <Button Content="クリア" Click="ClearEnvMap_Click" Padding="8,2" Margin="0,0,10,0"/>
+                </StackPanel>
+            </Grid>
+
+            <Grid Margin="0,5">
+                <Label Content="環境マップ 水平回転 (°)" VerticalAlignment="Center"/>
+                <ctrl:NumericTextBoxSlider Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=EnvironmentRotation, Mode=TwoWay}"
+                                           Minimum="0" Maximum="360" TickFrequency="5" SmallChange="1" LargeChange="15" IsInteger="True" StringFormat="0"
+                                           SliderWidth="200" TextBoxWidth="56" HorizontalAlignment="Right" Margin="0,0,10,0"/>
+            </Grid>
+
+            <Grid Margin="0,5">
+                <Label Content="環境マップ 明るさ倍率" VerticalAlignment="Center"/>
+                <ctrl:NumericTextBoxSlider Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=EnvironmentExposure, Mode=TwoWay}"
+                                           Minimum="0.1" Maximum="5.0" TickFrequency="0.1" SmallChange="0.05" StringFormat="0.00"
+                                           SliderWidth="200" TextBoxWidth="56" HorizontalAlignment="Right" Margin="0,0,10,0"/>
+            </Grid>
+
+            <Grid Margin="0,5">
+                <Label Content="環境マップ 反射強度" VerticalAlignment="Center"/>
+                <ctrl:NumericTextBoxSlider Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=EnvironmentReflectionIntensity, Mode=TwoWay}"
+                                           Minimum="0" Maximum="2.0" TickFrequency="0.05" SmallChange="0.05" StringFormat="0.00"
+                                           SliderWidth="200" TextBoxWidth="56" HorizontalAlignment="Right" Margin="0,0,10,0"/>
+            </Grid>
+
+            <Grid Margin="0,5">
+                <Label Content="背景にスカイボックスを描画 (空を不透明化)" VerticalAlignment="Center"/>
+                <CheckBox IsChecked="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=ShowSkybox}"
+                    HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0"/>
+            </Grid>
+
+            <Grid Margin="0,5">
+                <Label Content="スカイボックス ぼかし量" VerticalAlignment="Center"/>
+                <ctrl:NumericTextBoxSlider Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=SkyboxBlur, Mode=TwoWay}"
+                                           Minimum="0" Maximum="1.0" TickFrequency="0.05" SmallChange="0.01" StringFormat="0.00"
+                                           SliderWidth="200" TextBoxWidth="56" HorizontalAlignment="Right" Margin="0,0,10,0"/>
+            </Grid>
+
+            <Separator Margin="0,5"/>
+
+            <TextBlock Text="大気・フォグ ＆ ゴッドレイ（グローバル既定設定）" FontWeight="Bold" FontSize="13" Margin="0,5,0,5"/>
+
+            <Grid Margin="0,5">
+                <Label Content="距離フォグ（霧・遠近感）を有効にする" VerticalAlignment="Center"/>
+                <CheckBox IsChecked="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=EnableFog}"
+                    HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0"/>
+            </Grid>
+
+            <Grid Margin="0,5">
+                <Label Content="フォグ最大濃度" VerticalAlignment="Center"/>
+                <ctrl:NumericTextBoxSlider Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=FogDensity, Mode=TwoWay}"
+                                           Minimum="0" Maximum="1.0" TickFrequency="0.05" SmallChange="0.01" StringFormat="0.00"
+                                           SliderWidth="200" TextBoxWidth="56" HorizontalAlignment="Right" Margin="0,0,10,0"/>
+            </Grid>
+
+            <Grid Margin="0,5">
+                <Label Content="フォグ 開始距離 (px)" VerticalAlignment="Center"/>
+                <ctrl:NumericTextBoxSlider Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=FogStart, Mode=TwoWay}"
+                                           Minimum="0" Maximum="10000" TickFrequency="50" SmallChange="50" LargeChange="500" IsInteger="True" StringFormat="0"
+                                           SliderWidth="200" TextBoxWidth="56" HorizontalAlignment="Right" Margin="0,0,10,0"/>
+            </Grid>
+
+            <Grid Margin="0,5">
+                <Label Content="フォグ 最大距離 (px)" VerticalAlignment="Center"/>
+                <ctrl:NumericTextBoxSlider Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=FogEnd, Mode=TwoWay}"
+                                           Minimum="100" Maximum="20000" TickFrequency="100" SmallChange="100" LargeChange="1000" IsInteger="True" StringFormat="0"
+                                           SliderWidth="200" TextBoxWidth="56" HorizontalAlignment="Right" Margin="0,0,10,0"/>
+            </Grid>
+
+            <Grid Margin="0,5">
+                <Label Content="ゴッドレイ（放射状の光筋）を有効にする" VerticalAlignment="Center"/>
+                <CheckBox IsChecked="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=EnableGodRays}"
+                    HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0"/>
+            </Grid>
+
+            <Grid Margin="0,5">
+                <Label Content="ゴッドレイ 強度" VerticalAlignment="Center"/>
+                <ctrl:NumericTextBoxSlider Value="{Binding Source={x:Static local:D3D11RendererSettings.Default}, Path=GodRayIntensity, Mode=TwoWay}"
+                                           Minimum="0" Maximum="3.0" TickFrequency="0.05" SmallChange="0.05" StringFormat="0.00"
+                                           SliderWidth="200" TextBoxWidth="56" HorizontalAlignment="Right" Margin="0,0,10,0"/>
+            </Grid>
+
+            <TextBlock Text="・タイムラインに図形プラグインの「D3D11環境」を配置すると、HDRI環境マップ・スカイボックス・IBL/環境光・フォグ・ゴッドレイをシーン/カットごとにキーフレーム制御・上書きできます。&#x0a;・エフェクト一覧の「D3Dマテリアル」を個別アイテムに適用すると、金属・クローム・クリアコート・発光・ノーマルマップ・ラフネスマップをタイムライン上でアニメーション設定できます。&#x0a;・エフェクト一覧の「D3D大気・フォグ」を使うと、フォグの色・距離・高さフォグ・ゴッドレイをタイムラインでアニメーション制御できます。&#x0a;・内部計算はすべてリニアFP16 HDR空間で行われ、SDR環境でもトーンマッピング＋ブルームにより白飛びのない映画的な階調になります（2Dイラストの色味を優先したい場合はトーンマッピングを「なし」にしてください）。&#x0a;・HDRInjector が導入・有効化されている場合、出力ターゲット自体が R16G16B16A16_Float に自動昇格し、1.0を超える高輝度（HDRハイライト）をクリップせずそのまま HDRInjector のプレビュー／HDR10書き出しへ受け渡します。&#x0a;・内蔵の「D3D11 3Dモデル」はテクスチャをGPU専用（省メモリ）で扱い、Bistroのような巨大シーンでも最大テクスチャ解像度を2048px等に制限することでVRAM/RAMを大幅に節約できます。"
+                   Foreground="Gray" Margin="0,2,0,10" FontSize="11" TextWrapping="Wrap"/>
+
+        </StackPanel>
+    </ScrollViewer>
 </UserControl>

@@ -1,0 +1,82 @@
+<UserControl x:Class="Iyahon_D3D11Renderer_Core.Controls.NumericTextBoxSlider"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Focusable="False">
+    <UserControl.Resources>
+        <Style x:Key="DarkNumericBoxStyle" TargetType="TextBox">
+            <Setter Property="Background" Value="#161920"/>
+            <Setter Property="Foreground" Value="#E5E7EB"/>
+            <Setter Property="CaretBrush" Value="#FFFFFF"/>
+            <Setter Property="BorderBrush" Value="#3D434F"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="SelectionBrush" Value="#2563EB"/>
+            <Setter Property="FontSize" Value="10"/>
+            <Setter Property="Height" Value="19"/>
+            <Setter Property="Padding" Value="3,1"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="HorizontalContentAlignment" Value="Right"/>
+            <Setter Property="SnapsToDevicePixels" Value="True"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TextBox">
+                        <Border x:Name="Bd"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="2.5">
+                            <ScrollViewer x:Name="PART_ContentHost"
+                                          VerticalAlignment="Center"
+                                          Margin="0"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="#60A5FA"/>
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="#60A5FA"/>
+                                <Setter TargetName="Bd" Property="Background" Value="#11141A"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.5"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="LightNumericBoxStyle" TargetType="TextBox">
+            <Setter Property="Height" Value="22"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Padding" Value="4,1"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="HorizontalContentAlignment" Value="Right"/>
+        </Style>
+    </UserControl.Resources>
+
+    <Grid x:Name="RootGrid">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition x:Name="SliderCol" Width="*"/>
+            <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+
+        <Slider x:Name="PART_Slider"
+                Grid.Column="0"
+                VerticalAlignment="Center"
+                Focusable="False"
+                IsMoveToPointEnabled="True"
+                ValueChanged="OnPartSliderValueChanged"
+                PreviewMouseUp="OnPartSliderPreviewMouseUp"/>
+
+        <TextBox x:Name="PART_TextBox"
+                 Grid.Column="1"
+                 Width="48"
+                 Margin="6,0,0,0"
+                 VerticalAlignment="Center"
+                 InputMethod.IsInputMethodEnabled="False"
+                 PreviewMouseLeftButtonDown="OnPartTextBoxPreviewMouseLeftButtonDown"
+                 GotKeyboardFocus="OnPartTextBoxGotKeyboardFocus"
+                 LostKeyboardFocus="OnPartTextBoxLostKeyboardFocus"
+                 PreviewKeyDown="OnPartTextBoxPreviewKeyDown"/>
+    </Grid>
+</UserControl>
