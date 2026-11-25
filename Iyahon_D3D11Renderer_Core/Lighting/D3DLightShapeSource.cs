@@ -62,8 +62,11 @@ internal sealed class D3DLightShapeSource : IShapeSource
             CastShadow = _parameter.CastShadow,
             ShadowIntensity = (float)_parameter.ShadowIntensity.GetValue(frame, length, fps),
             ShadowBias = (float)_parameter.ShadowBias.GetValue(frame, length, fps),
-            ShowGizmo = _parameter.ShowGizmo, // ★追加：トグルの状態を転送
+            ShadowNormalBias = (float)_parameter.ShadowNormalBias.GetValue(frame, length, fps),
+            ShadowSoftness = (float)_parameter.ShadowSoftness.GetValue(frame, length, fps),
+            ShowGizmo = _parameter.ShowGizmo,
             Position = Vector3.Zero,
+            Layer = desc.Layer,
         };
 
         LastRegisteredLight = lightData;

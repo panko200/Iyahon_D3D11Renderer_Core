@@ -20,6 +20,10 @@ internal static class DepthSortVideoPlayerPatch
         _playerType?.GetField("isTimelineChanged",
             BindingFlags.Instance | BindingFlags.NonPublic);
 
+    private static readonly FieldInfo? _timelineVideoField =
+        _playerType?.GetField("timelineVideo",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+
     private static readonly List<WeakReference> _instances = new();
     private static readonly object _lock = new();
 
@@ -45,6 +49,32 @@ internal static class DepthSortVideoPlayerPatch
             // 新規プレイヤー登録時に死んだWeakReferenceを掃除する
             _instances.RemoveAll(wr => !wr.IsAlive);
             _instances.Add(new WeakReference(__instance));
+        }
+    }
+
+    internal static bool IsMainTimelineSource(object timelineSource)
+    {
+        if (_timelineVideoField == null) return true;
+        lock (_lock)
+        {
+            bool anyMainSourceKnown = false;
+            foreach (var wr in _instances)
+            {
+                var instance = wr.Target;
+                if (instance == null) continue;
+                try
+                {
+                    var tv = _timelineVideoField.GetValue(instance);
+                    if (tv != null)
+                    {
+                        anyMainSourceKnown = true;
+                        if (ReferenceEquals(tv, timelineSource))
+                            return true;
+                    }
+                }
+                catch { }
+            }
+            return !anyMainSourceKnown;
         }
     }
 

@@ -51,6 +51,13 @@ public class Iyahon_D3D11Renderer_CorePlugin : IPlugin
                 Log("ObjLoader連携: 有効（OBJモデルをD3D11空間に統合描画します）");
             else
                 Log("ObjLoader連携: 無効（ObjLoaderプラグインが検出されませんでした）");
+
+            // HDRInjector連携の初期化（HDRInjectorが有効な場合はFP16 Linear scRGB HDR出力）
+            HdrInjectorBridge.Initialize();
+            if (HdrInjectorBridge.IsAvailable)
+                Log($"HDRInjector連携: 検出済み (EnableHdr={HdrInjectorBridge.IsHdrEnabledInInjector})");
+            else
+                Log("HDRInjector連携: 未検出（標準SDR出力パイプラインを使用します）");
         }
         catch (Exception ex)
         {
