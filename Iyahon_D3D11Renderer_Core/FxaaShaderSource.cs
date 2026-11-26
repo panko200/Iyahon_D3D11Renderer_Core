@@ -29,7 +29,8 @@ PSInput VS_Fxaa(VSInput input)
 
 float Luma(float4 c)
 {
-    return dot(c.rgb, float3(0.299, 0.587, 0.114)) + c.a;
+    float3 tonemapped = saturate(c.rgb / (1.0 + max(c.rgb, 0.0)));
+    return dot(tonemapped, float3(0.299, 0.587, 0.114)) + saturate(c.a);
 }
 
 float4 PS_Fxaa(PSInput input) : SV_Target
@@ -133,6 +134,25 @@ float4 PS_Fxaa(PSInput input) : SV_Target
         finalUV.x += finalOffset * stepLength;
 
     return gTex.Sample(gSampler, finalUV);
+}
+
+// HDR & Premultiplied-alpha safe 9-tap Tent/Mitchell supersample resolve
+float4 PS_SsaaResolve(PSInput input) : SV_Target
+{
+    float2 uv = input.UV;
+    float2 t = rcpFrame * 0.65;
+
+    float4 c  = gTex.SampleLevel(gSampler, uv, 0) * 0.25;
+    float4 n  = gTex.SampleLevel(gSampler, uv + float2( 0.0, -t.y), 0) * 0.125;
+    float4 s  = gTex.SampleLevel(gSampler, uv + float2( 0.0,  t.y), 0) * 0.125;
+    float4 e  = gTex.SampleLevel(gSampler, uv + float2( t.x,  0.0), 0) * 0.125;
+    float4 w  = gTex.SampleLevel(gSampler, uv + float2(-t.x,  0.0), 0) * 0.125;
+    float4 nw = gTex.SampleLevel(gSampler, uv + float2(-t.x, -t.y), 0) * 0.0625;
+    float4 ne = gTex.SampleLevel(gSampler, uv + float2( t.x, -t.y), 0) * 0.0625;
+    float4 sw = gTex.SampleLevel(gSampler, uv + float2(-t.x,  t.y), 0) * 0.0625;
+    float4 se = gTex.SampleLevel(gSampler, uv + float2( t.x,  t.y), 0) * 0.0625;
+
+    return c + n + s + e + w + nw + ne + sw + se;
 }
 ";
 }

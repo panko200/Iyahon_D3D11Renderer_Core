@@ -1,5 +1,6 @@
 using System;
 using System.Numerics;
+using Iyahon_D3D11Renderer_Core.Lighting;
 using Vortice.Direct3D11;
 
 #nullable enable
@@ -13,6 +14,9 @@ public class D3DRenderContext
 {
     /// <summary>ワールド変換行列</summary>
     public Matrix4x4 WorldMatrix { get; set; }
+
+    /// <summary>非一様スケール・反転対応の法線変換行列（WorldMatrix上位3x3の逆転置）</summary>
+    public Matrix4x4 NormalMatrix { get; set; } = Matrix4x4.Identity;
 
     /// <summary>
     /// 3Dプレビュー用の ViewProjection 行列。
@@ -52,6 +56,14 @@ public class D3DRenderContext
     public bool IsShadowPass { get; set; } = false;
     public Vector3 ShadowLightPos { get; set; } = Vector3.Zero;
     public float ShadowLightRange { get; set; } = 0f;
+
+    public bool IsOitPass { get; set; } = false;
+    public bool IsSemiTransPass { get; set; } = false;
+    public bool IsDepthOnlyPass { get; set; } = false;
+
+    public MaterialOverrideParameters Material { get; set; }
+    public ID3D11ShaderResourceView? NormalMapSrv { get; set; }
+    public ID3D11ShaderResourceView? RoughnessMapSrv { get; set; }
 }
 
 /// <summary>
@@ -94,4 +106,12 @@ public interface ID3DEffect : IDisposable
     void Render(ID3D11DeviceContext ctx, ID3D11Device device,
                 ID3D11ShaderResourceView inputSrv,
                 D3DRenderContext renderContext);
+}
+
+/// <summary>
+/// OIT / 半透明パス・深度専用パスに対応したD3Dエフェクト用マーカーインターフェース。
+/// これを実装したエフェクトは OIT パスおよび Standard 半透明パスでも適切にシェーダーを切り替えて描画される。
+/// </summary>
+public interface IOitCapableD3DEffect : ID3DEffect
+{
 }
